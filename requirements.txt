@@ -1,0 +1,15 @@
+discord.py==2.3.2
+python-dotenv==1.0.1
+requests
+pytz
+Pillow
+qrcode
+aiohttp
+chat-exporter
+aiofiles
+python-bitcoinrpc
+web3
+eth-account
+solders
+base58
+audioop-lts

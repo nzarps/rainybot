@@ -1,0 +1,15 @@
+[Unit]
+Description=RainyDay Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=k
+WorkingDirectory=/home/k/rainyday-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/k/rainyday-bot/venv/bin/python3 -u main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
