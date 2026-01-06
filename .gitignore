@@ -1,0 +1,11 @@
+
+# .gitignore
+__pycache__/
+*.pyc
+venv/
+*.log
+*.db
+*.db-shm
+*.db-wal
+.env
+data.json.migrated

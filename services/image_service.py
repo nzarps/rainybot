@@ -3,6 +3,9 @@ import asyncio
 from PIL import Image, ImageDraw, ImageOps, ImageFont
 import aiohttp
 import base64
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Simple Green Shield Icon (Base64 encoded to avoid external file dependency)
 # This is a placeholder 64x64 green shield/check icon
@@ -22,9 +25,9 @@ async def generate_handshake_image(buyer_pfp, seller_pfp):
             async with session.get(url_or_bytes, timeout=10, headers=headers) as resp:
                 if resp.status == 200:
                     return await resp.read()
-                print(f"[FETCH_ERR] Status {resp.status} for {url_or_bytes}")
+                logger.error(f"[FETCH_ERR] Status {resp.status} for {url_or_bytes}")
         except Exception as e:
-            print(f"[FETCH_EXC] Error fetching {url_or_bytes}: {e}")
+            logger.error(f"[FETCH_EXC] Error fetching {url_or_bytes}: {e}")
         return None
 
     async with aiohttp.ClientSession() as session:
@@ -85,7 +88,8 @@ def _generate_sync(buyer_bytes, seller_bytes, shield_bytes=None):
             sy = (H - 80) // 2
             img.paste(shield, (sx, sy), shield)
         except Exception as e:
-            print(f"Shield error: {e}")
+
+            logger.error(f"Shield error: {e}")
 
     # Text: "SECURED" under shield
     try:

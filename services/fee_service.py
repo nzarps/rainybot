@@ -6,6 +6,9 @@ Fees are deducted during release operations and sent to configured fee addresses
 """
 
 import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def is_fees_enabled() -> bool:
@@ -53,7 +56,9 @@ def calculate_fee(amount: float, currency: str) -> tuple[float, float]:
     
     fee_address = get_fee_address(currency)
     if not fee_address:
-        print(f"[FEE] No fee address configured for {currency}, skipping fee deduction")
+        # logger.info(f"[FEE] No fee address configured for {currency}, skipping fee deduction")
+        # Keep it silent on production unless debug
+        logger.debug(f"[FEE] No fee address configured for {currency}, skipping fee deduction")
         return (0.0, amount)
     
     # Pass currency to get dynamic fee
@@ -62,8 +67,8 @@ def calculate_fee(amount: float, currency: str) -> tuple[float, float]:
     fee_amount = amount * (fee_percentage / 100.0)
     remaining_amount = amount - fee_amount
     
-    print(f"[FEE] Calculated {fee_percentage}% fee for {currency}: {fee_amount:.8f}")
-    print(f"[FEE] Remaining after fee: {remaining_amount:.8f} {currency}")
+    logger.info(f"[FEE] Calculated {fee_percentage}% fee for {currency}: {fee_amount:.8f}")
+    logger.info(f"[FEE] Remaining after fee: {remaining_amount:.8f} {currency}")
     
     return (fee_amount, remaining_amount)
 

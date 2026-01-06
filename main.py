@@ -2,6 +2,18 @@ import discord
 from discord.ext import commands, tasks
 import asyncio
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("RainyBot")
 import requests
 import datetime
 from discord import app_commands
@@ -71,7 +83,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
         return await (interaction.response.send_message(msg, ephemeral=True) if not interaction.response.is_done() else interaction.followup.send(msg, ephemeral=True))
 
     # Log unexpected errors for developers
-    print(f"[Interaction Error] {error}")
+    logger.error(f"[Interaction Error] {error}")
     
     # Generic failure response
     msg = "⚠️ **System Error**\nAn unexpected error occurred. The development team has been notified. Please try again later."
@@ -86,32 +98,32 @@ async def setup_hook():
     # 0. One-time Migration from data.json to Database
     try:
         if os.path.exists("data.json"):
-            print("[MIGRATION] legacy data.json found. Migrating to database...")
+            logger.info("[MIGRATION] legacy data.json found. Migrating to database...")
             with open("data.json", "r") as f:
                 legacy_data = json.load(f)
             save_all_data(legacy_data) # This now saves to DB via database.py
             os.rename("data.json", "data.json.migrated")
-            print("[MIGRATION] Migration complete. data.json moved to data.json.migrated.")
+            logger.info("[MIGRATION] Migration complete. data.json moved to data.json.migrated.")
         else:
             # Pre-load Global Data Cache from DB if no migration needed
             load_all_data() 
-            print("[INFO] Global deal data cache pre-warmed from DB.")
+            logger.info("[INFO] Global deal data cache pre-warmed from DB.")
     except Exception as e:
-        print(f"[ERROR] Migration/Pre-load failed: {e}")
+        logger.error(f"[ERROR] Migration/Pre-load failed: {e}")
 
     # 1. Pre-warm Blacklist Cache (Database call)
     try:
         blacklist_service._load_cache()
-        print("[INFO] Blacklist cache pre-warmed.")
+        logger.info("[INFO] Blacklist cache pre-warmed.")
     except Exception as e:
-        print(f"[ERROR] Blacklist pre-warm failed: {e}")
+        logger.error(f"[ERROR] Blacklist pre-warm failed: {e}")
 
     # 2. Pre-warm Deal Counter Cache (File I/O)
     try:
         load_counter()
-        print("[INFO] Counter cache pre-warmed.")
+        logger.info("[INFO] Counter cache pre-warmed.")
     except Exception as e:
-        print(f"[ERROR] Counter pre-warm failed: {e}")
+        logger.error(f"[ERROR] Counter pre-warm failed: {e}")
 
     bot.tree.interaction_check = global_interaction_check
     
@@ -124,7 +136,7 @@ async def setup_hook():
     bot.add_view(ReleaseButton())
     bot.add_view(AddyButtons())
     
-    print("[INFO] Global interaction check and Persistent Views registered.")
+    logger.info("[INFO] Global interaction check and Persistent Views registered.")
 
 bot.setup_hook = setup_hook
 # Global session and pricing functions are now managed in services.price_service
@@ -172,8 +184,7 @@ import time
 
 
 def dbg(msg):
-
-    print(f"[LTC-DEBUG] {msg}")
+    logger.debug(f"[LTC-DEBUG] {msg}")
 
 def get_currency_info(currency):
     """Returns metadata (name, icon) for a given currency."""
@@ -239,7 +250,7 @@ async def get_gas_balance(address, currency):
                 except:
                     continue
     except Exception as e:
-        print("Gas balance error:", e)
+        logger.error(f"Gas balance error: {e}")
 
 
 
@@ -416,8 +427,7 @@ async def generate_ltc_wallet(deal_id):
 
 
     except Exception as e:
-
-        print(f"[LTC-RPC-ERROR] Failed to generate wallet: {e}")
+        logger.error(f"[LTC-RPC-ERROR] Failed to generate wallet: {e}")
 
         return None
 
@@ -494,7 +504,7 @@ async def get_eth_balance_parallel(address):
             balance_eth = balance_wei / (10 ** 18)
             return float(balance_eth)
         except Exception as e:
-            print(f"[ETH-RPC] Error ({rpc_url}): {e}")
+            logger.error(f"[ETH-RPC] Error ({rpc_url}): {e}")
             return None
     
     async def fetch_balance(rpc_url):
@@ -506,10 +516,10 @@ async def get_eth_balance_parallel(address):
     
     for i, result in enumerate(results):
         if isinstance(result, (int, float)) and result >= 0:
-            print(f"[ETH-BALANCE] Address {address[:10]}... = {result} ETH (via RPC #{i+1})")
+            logger.info(f"[ETH-BALANCE] Address {address[:10]}... = {result} ETH (via RPC #{i+1})")
             return result
     
-    print(f"[ETH-BALANCE] All RPCs failed for {address[:10]}... - returning 0.0")
+    logger.error(f"[ETH-BALANCE] All RPCs failed for {address[:10]}... - returning 0.0")
     return 0.0
 
 async def get_eth_block_number():
@@ -585,8 +595,7 @@ async def get_last_eth_txhash(address):
                     
 
         except Exception as e:
-
-            print(f"ETH tx detection error ({rpc_url}): {e}")
+            logger.error(f"ETH tx detection error ({rpc_url}): {e}")
 
         return None
 
@@ -658,7 +667,7 @@ async def send_eth(private_key, to_address, amount=None):
             return tx_hash.hex()
 
         except Exception as e:
-            print(f"ETH send failed ({rpc_url}): {e}")
+            logger.error(f"ETH send failed ({rpc_url}): {e}")
             continue
 
     raise Exception("All ETH RPC endpoints failed")
@@ -707,7 +716,7 @@ async def estimate_required_gas(contract_address, private_key, to_address, amoun
             return float(total_gas_native)
 
         except Exception as e:
-            print("Gas estimation failed on RPC:", rpc, e)
+            logger.error(f"Gas estimation failed on RPC: {rpc} {e}")
             continue
 
     return None
@@ -1654,7 +1663,7 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     
     # Check if fees were already deducted for this deal (prevents double fee on restart)
     if deal_info.get('fee_deducted', False):
-        print(f"[FEE] Fee already deducted for deal {deal_id}, skipping fee deduction")
+        logger.info(f"[FEE] Fee already deducted for deal {deal_id}, skipping fee deduction")
         main_tx = await send_funds_based_on_currency(deal_info, to_address, None, status_msg=status_msg)
         return {
             'main_tx': main_tx,
@@ -1678,7 +1687,7 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     fee_amount, remaining_amount = calculate_fee(amount, currency)
     fee_address = get_fee_address(currency)
     
-    print(f"[FEE] Deducting {fee_amount:.8f} {currency} fee, sending {remaining_amount:.8f} to recipient")
+    logger.info(f"[FEE] Deducting {fee_amount:.8f} {currency} fee, sending {remaining_amount:.8f} to recipient")
     
     fee_tx = None
     
@@ -1708,7 +1717,7 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     
     try:
         if fee_amount > 0 and fee_address:
-            print(f"[FEE] Sending fee of {fee_amount:.8f} {currency} to {fee_address}")
+            logger.info(f"[FEE] Sending fee of {fee_amount:.8f} {currency} to {fee_address}")
             
             if currency == 'ltc':
                 fee_tx = await send_ltc(deal_info.get('address'), private_key, fee_address, fee_amount)
@@ -1727,13 +1736,13 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
             elif currency == 'ethereum':
                 fee_tx = await send_eth(private_key, fee_address, fee_amount)
             
-            print(f"[FEE] Fee transaction sent: {fee_tx}")
+            logger.info(f"[FEE] Fee transaction sent: {fee_tx}")
             
             # Mark fee as deducted synchronously to prevent double charging on restart
             if deal_id:
                 from database import save_deal_field_sync
                 save_deal_field_sync(deal_id, 'fee_deducted', True)
-                print(f"[FEE] Marked fee_deducted=True for deal {deal_id} (Sync)")
+                logger.info(f"[FEE] Marked fee_deducted=True for deal {deal_id} (Sync)")
             
             # Update status: Verifying on blockchain
             if status_msg:
@@ -1750,7 +1759,7 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
             await asyncio.sleep(10)
     
     except Exception as e:
-        print(f"[FEE] Error sending fee: {e}")
+        logger.info(f"[FEE] Error sending fee: {e}")
         # If fee fails, try sending full amount (no fee)
         main_tx = await send_funds_based_on_currency(deal_info, to_address, amount, status_msg=status_msg)
         return {
@@ -1825,7 +1834,7 @@ async def send_usdt_specific_amount(contract_address, private_key, to_address, a
             return tx_hash.hex()
 
         except Exception as e:
-            print(f"[FEE] RPC Failed ({rpc}): {e}")
+            logger.info(f"[FEE] RPC Failed ({rpc}): {e}")
             continue
 
     raise Exception("All RPC failed for fee transfer")
@@ -3375,14 +3384,14 @@ async def auto_fund_gas(address, currency, needed_amount):
         return False
 
     if not gas_key:
-         print(f"[AutoGas] No gas key configured for {currency}")
+         logger.info(f"[AutoGas] No gas key configured for {currency}")
          return False
 
     try:
         # Import here to ensure we have the latest
         from crypto_utils import send_native_chain_generic
         
-        print(f"[AutoGas] Funding {needed_amount} native to {address} for {currency}...")
+        logger.info(f"[AutoGas] Funding {needed_amount} native to {address} for {currency}...")
         txid = await send_native_chain_generic(
             gas_key,
             address,
@@ -3390,10 +3399,10 @@ async def auto_fund_gas(address, currency, needed_amount):
             rpc_urls,
             chain_id
         )
-        print(f"[AutoGas] Funding Sent! TXID: {txid}")
+        logger.info(f"[AutoGas] Funding Sent! TXID: {txid}")
         return True
     except Exception as e:
-        print(f"[AutoGas] Failed to fund gas: {e}")
+        logger.info(f"[AutoGas] Failed to fund gas: {e}")
         return False
 
 async def ensure_deal_gas(deal_info, status_msg=None):
@@ -3410,7 +3419,7 @@ async def ensure_deal_gas(deal_info, status_msg=None):
     gas_bal = await get_gas_balance(address, currency)
     
     if gas_bal < needed:
-        print(f"[AutoGas] Insufficient gas for transaction: {gas_bal:.6f} < {needed:.6f} {symbol}")
+        logger.info(f"[AutoGas] Insufficient gas for transaction: {gas_bal:.6f} < {needed:.6f} {symbol}")
         # Fund exactly what's needed plus the buffer already in 'needed'
         fund_amount = float(needed) - float(gas_bal)
         if fund_amount < 0: fund_amount = 0
@@ -3427,23 +3436,23 @@ async def ensure_deal_gas(deal_info, status_msg=None):
                     ))
                 except: pass
 
-            print(f"[AutoGas] Funding {fund_amount:.6f} {symbol} for deal wallet...")
+            logger.info(f"[AutoGas] Funding {fund_amount:.6f} {symbol} for deal wallet...")
             success = await auto_fund_gas(address, currency, fund_amount)
             if success:
-                print(f"[AutoGas] Gas funded, polling for balance confirmation...")
+                logger.info(f"[AutoGas] Gas funded, polling for balance confirmation...")
                 # Dynamic polling instead of static sleep
                 for i in range(12): # Max 60 seconds (12 * 5s)
                     await asyncio.sleep(5)
                     new_bal = await get_gas_balance(address, currency)
                     if new_bal >= needed:
-                        print(f"[AutoGas] Gas confirmed after {i*5+5}s")
+                        logger.info(f"[AutoGas] Gas confirmed after {i*5+5}s")
                         return True
-                print(f"[AutoGas] Gas funding timed out after 60s.")
+                logger.info(f"[AutoGas] Gas funding timed out after 60s.")
                 return False
         else:
-            print(f"[AutoGas] No GAS_SOURCE_PRIVATE_KEY configured, skipping auto-fund")
+            logger.info(f"[AutoGas] No GAS_SOURCE_PRIVATE_KEY configured, skipping auto-fund")
     else:
-        print(f"[AutoGas] Gas sufficient: {gas_bal:.6f} {symbol} (needed: {needed:.6f})")
+        logger.info(f"[AutoGas] Gas sufficient: {gas_bal:.6f} {symbol} (needed: {needed:.6f})")
     
 
     return True
@@ -3477,7 +3486,7 @@ async def sweep_dust_fees(deal_id, deal_info=None):
         if not chain_type:
             return
 
-        print(f"[Sweep] Checking dust for {deal_id} ({chain_type})...")
+        logger.info(f"[Sweep] Checking dust for {deal_id} ({chain_type})...")
         
         # Priority: Dust Sweep Address -> Fee Address
         fee_dest = config.DUST_SWEEP_ADDRESS
@@ -3485,7 +3494,7 @@ async def sweep_dust_fees(deal_id, deal_info=None):
              fee_dest = get_fee_address(chain_type)
              
         if not fee_dest:
-            print(f"[Sweep] No sweep address configured for {chain_type}")
+            logger.info(f"[Sweep] No sweep address configured for {chain_type}")
             return
 
         # SWEEP LOGIC
@@ -3495,7 +3504,7 @@ async def sweep_dust_fees(deal_id, deal_info=None):
             # Reserve 0.000005 SOL for fee (approx)
             amount = bal - 0.000005
             if amount > 0.0001: # Min threshold
-                print(f"[Sweep] Sweeping {amount} SOL to {fee_dest}")
+                logger.info(f"[Sweep] Sweeping {amount} SOL to {fee_dest}")
                 await send_solana(private_key, fee_dest, amount)
                 
         elif chain_type in ['usdt_bep20', 'usdt_polygon', 'ethereum']:
@@ -3545,7 +3554,7 @@ async def sweep_dust_fees(deal_id, deal_info=None):
                         if amount_eth < 0.01 and symbol == "MATIC": return True
                         if amount_eth < 0.0001 and symbol == "ETH": return True
 
-                        print(f"[Sweep] Sweeping {amount_eth} {symbol} to {fee_dest}...")
+                        logger.info(f"[Sweep] Sweeping {amount_eth} {symbol} to {fee_dest}...")
                         
                         tx = {
                             'to': params['to'],
@@ -3558,13 +3567,13 @@ async def sweep_dust_fees(deal_id, deal_info=None):
                         
                         signed = w3.eth.account.sign_transaction(tx, private_key)
                         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-                        print(f"[Sweep] TX: {w3.to_hex(tx_hash)}")
+                        logger.info(f"[Sweep] TX: {w3.to_hex(tx_hash)}")
                         return True
                     else:
-                        print(f"[Sweep] Insufficient funds to cover gas.")
+                        logger.info(f"[Sweep] Insufficient funds to cover gas.")
                         return True # Handled
                 except Exception as e:
-                    print(f"[Sweep] RPC {rpc} error: {e}")
+                    logger.info(f"[Sweep] RPC {rpc} error: {e}")
                     return False
 
             # Try RPCs
@@ -3573,7 +3582,7 @@ async def sweep_dust_fees(deal_id, deal_info=None):
                     break
 
     except Exception as e:
-        print(f"[Sweep] Error: {e}")
+        logger.info(f"[Sweep] Error: {e}")
 
 # ========================================
 
@@ -3601,14 +3610,14 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
     
     lock_key = address.lower()
     if lock_key in bot.active_monitors:
-        print(f"[MONITOR] Already monitoring address {address}, skipping duplicate call.")
+        logger.debug(f"[MONITOR] Already monitoring address {address}, skipping duplicate call.")
         return
         
     bot.active_monitors.add(lock_key)
 
     # If deal is already paid/processed, stop monitoring
     if deal_info.get('paid') or deal_info.get('status') in ['completed', 'cancelled', 'awaiting_withdrawal']:
-        print(f"[CheckPayment] Deal {deal_id[:16]} already processed/paid. Stopping monitoring.")
+        logger.debug(f"[CheckPayment] Deal {deal_id[:16]} already processed/paid. Stopping monitoring.")
         bot.active_monitors.discard(lock_key)
         return
 
@@ -3655,11 +3664,11 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
             try:
                 wallet_balance = await get_balance_for_currency(address, currency)
                 if wallet_balance > 0:
-                    print(f"[EXPIRY] Deal has funds ({wallet_balance}), skipping expiry - will never close with funds")
+                    logger.info(f"[EXPIRY] Deal has funds ({wallet_balance}), skipping expiry - will never close with funds")
                     await asyncio.sleep(30)  # Just wait and continue monitoring
                     continue
             except Exception as e:
-                print(f"[EXPIRY] Balance check error: {e}")
+                logger.info(f"[EXPIRY] Balance check error: {e}")
 
             if rescan_message:
                 try: await rescan_message.delete()
@@ -3729,10 +3738,10 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
             except Exception as e:
 
                 total = 0
-                print(f"[CheckPayment] Balance check error for {currency}: {e}")
+                logger.debug(f"[CheckPayment] Balance check error for {currency}: {e}")
 
 
-            print(f"[CheckPayment] Balance for {deal_id[:10]}: {total} {currency} (expected: {expected_amount})")
+            logger.debug(f"[CheckPayment] Balance for {deal_id[:10]}: {total} {currency} (expected: {expected_amount})")
             # Only show timeout if still no payment
 
             if total == 0:
@@ -3770,11 +3779,11 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                         try:
                             wallet_balance = await get_balance_for_currency(address, currency)
                             if wallet_balance > 0:
-                                print(f"[EXPIRY] Deal has funds ({wallet_balance}), skipping expiry - will never close with funds")
+                                logger.info(f"[EXPIRY] Deal has funds ({wallet_balance}), skipping expiry - will never close with funds")
                                 await asyncio.sleep(30)  # Just wait and continue monitoring
                                 continue
                         except Exception as e:
-                            print(f"[EXPIRY] Balance check error: {e}")
+                            logger.info(f"[EXPIRY] Balance check error: {e}")
 
                         try: await rescan_message.delete()
                         except: pass
@@ -3834,12 +3843,12 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
             _, current_deal = deal_tuple
             # CRITICAL: Include ALL post-payment states to stop monitoring immediately
             if current_deal and (current_deal.get('paid') or current_deal.get('status') in ['escrowed', 'completed', 'cancelled', 'awaiting_withdrawal', 'awaiting_confirmation', 'releasing']):
-                print(f"[CheckPayment] Deal {deal_id[:16]} verified or progressing during loop. Stopping.")
+                logger.debug(f"[CheckPayment] Deal {deal_id[:16]} verified or progressing during loop. Stopping.")
                 bot.active_monitors.discard(lock_key)
                 return
         else:
             # If deal is gone, stop monitoring (or log warning)
-            print(f"[CheckPayment] Deal lost for channel {channel.id}. Stopping.")
+            logger.debug(f"[CheckPayment] Deal lost for channel {channel.id}. Stopping.")
             bot.active_monitors.discard(lock_key)
             return
 
@@ -3875,7 +3884,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                 
             # Log every check for debugging
             if total > 0 or monitoring_elapsed % 30 < 2:
-                print(f"[MONITOR] Deal {deal_id[:8]} | {currency} | Val: {total} | Expected: {expected_amount} | Confirmed: {is_confirmed}")
+                logger.debug(f"[MONITOR] Deal {deal_id[:8]} | {currency} | Val: {total} | Expected: {expected_amount} | Confirmed: {is_confirmed}")
                 
         except Exception as balance_err:
             print(f"[MONITOR_ERR] Balance check failed for {currency}: {balance_err}")
@@ -3928,19 +3937,19 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
 
 
         # DEBUG LOGGING (TEMPORARY)
-        print(f"[DEBUG] Coin: {currency} | Address: {address} | Balance: {total} | Expected: {expected_amount}")
+        logger.debug(f"[DEBUG] Coin: {currency} | Address: {address} | Balance: {total} | Expected: {expected_amount}")
 
         # NOTE: Gas funding moved to release phase (send_funds_with_fee)
         # Sender pays their own gas when depositing to deal wallet
 
 
         # PARTIAL
-        print(f"[DEBUG] Payment check: total={total}, last_balance={last_balance}, total>0={total > 0}, total>last_balance={total > last_balance}")
+        logger.debug(f"[DEBUG] Payment check: total={total}, last_balance={last_balance}, total>0={total > 0}, total>last_balance={total > last_balance}")
         if total > 0:
             # If new funds came in since last check
             if total > last_balance:
                 last_balance = total
-                print(f"[DEBUG] New balance detected: {total}")
+                logger.debug(f"[DEBUG] New balance detected: {total}")
                 
                 # Feedback: Payment Detected - PREMIUM UI
                 if msg:
@@ -3990,7 +3999,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                                 except:
                                     pass
                     except Exception as e:
-                        print(f"[DEBUG] Error updating detection message: {e}")
+                        logger.debug(f"[DEBUG] Error updating detection message: {e}")
                 
                 # Update deal data
                 deal_info["ltc_amount"] = float(total) 
@@ -4013,7 +4022,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     if d_tup:
                         _, cd = d_tup
                         if cd.get('paid') or cd.get('status') != 'active':
-                             print(f"[MONITOR] Skipping partial notify for {deal_id[:8]} - state is {cd.get('status')}")
+                             logger.debug(f"[MONITOR] Skipping partial notify for {deal_id[:8]} - state is {cd.get('status')}")
                              bot.active_monitors.discard(lock_key)
                              return
 
@@ -4072,12 +4081,12 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     if updated_deal_tuple:
                         _, updated_deal = updated_deal_tuple
                         if updated_deal.get('paid') or updated_deal.get('status') in ['escrowed', 'completed', 'cancelled', 'awaiting_withdrawal']:
-                            print(f"[MONITOR] JIT check: Deal {deal_id[:8]} already processed. Aborting message.")
+                            logger.debug(f"[MONITOR] JIT check: Deal {deal_id[:8]} already processed. Aborting message.")
                             bot.active_monitors.discard(lock_key)
                             return
 
                     # EXACT FULL PAYMENT - IMMEDIATE PREMIUM UI
-                    print(f"[MONITOR] Full payment detected for {deal_id[:8]}. Proceeding to verification.")
+                    logger.debug(f"[MONITOR] Full payment detected for {deal_id[:8]}. Proceeding to verification.")
                     txid = await fetch_txid_ultimate(address, currency)
                     
                     # Compute USD Value
@@ -4907,19 +4916,19 @@ class BuyerSellerModal(Modal, title="Fill properly below!"):
 
 
 
-        print(f"[DEBUG] Looking for Category 1 ID: {CATEGORY_ID_1}")
-        print(f"[DEBUG] Looking for Category 2 ID: {CATEGORY_ID_2}")
+        logger.debug(f"[DEBUG] Looking for Category 1 ID: {CATEGORY_ID_1}")
+        logger.debug(f"[DEBUG] Looking for Category 2 ID: {CATEGORY_ID_2}")
 
         category = guild.get_channel(int(CATEGORY_ID_1))
         acategory = guild.get_channel(int(CATEGORY_ID_2))
 
         if category:
-            print(f"[DEBUG] Found Category 1: {category.name} ({len(category.channels)} channels)")
+            logger.debug(f"[DEBUG] Found Category 1: {category.name} ({len(category.channels)} channels)")
         else:
-            print(f"[DEBUG] Category 1 NOT FOUND")
+            logger.debug(f"[DEBUG] Category 1 NOT FOUND")
             
         if acategory:
-            print(f"[DEBUG] Found Category 2: {acategory.name} ({len(acategory.channels)} channels)")
+            logger.debug(f"[DEBUG] Found Category 2: {acategory.name} ({len(acategory.channels)} channels)")
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
@@ -8072,7 +8081,7 @@ class RefundView(View):
     
     @discord.ui.button(label="Enter Address to Get Funds Back", style=discord.ButtonStyle.green, custom_id="refund_btn")
     async def refund_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        print(f"[DEBUG] Refund button clicked by {interaction.user.id} in channel {interaction.channel.id}")
+        logger.debug(f"[DEBUG] Refund button clicked by {interaction.user.id} in channel {interaction.channel.id}")
         try:
             deal_id, deal = get_deal_by_channel(interaction.channel.id)
             if not deal:

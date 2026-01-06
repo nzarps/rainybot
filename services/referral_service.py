@@ -2,6 +2,9 @@
 from services.db_manager import db
 import string
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 
 class ReferralService:
     def get_referral_code(self, user_id):
@@ -107,7 +110,8 @@ class ReferralService:
                     return row[0].lower() == 'true'
                 return True # Default to enabled if not set
         except Exception as e:
-            print(f"Error checking referral status: {e}")
+
+            logger.error(f"Error checking referral status: {e}")
             return True
 
     def set_referral_status(self, enabled: bool):
@@ -123,8 +127,9 @@ class ReferralService:
                 conn.commit()
                 cursor.close()
             return True
+
         except Exception as e:
-            print(f"Error setting referral status: {e}")
+            logger.error(f"Error setting referral status: {e}")
             return False
 
 referral_service = ReferralService()

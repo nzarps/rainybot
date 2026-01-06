@@ -819,3 +819,77 @@ PermissionError: [Errno 13] Permission denied: 'data.json'
 INFO:HealthMonitor:HEARTBEAT: Bot active for 2460s. Latency: 440.46ms
 [DEBUG] No deal found for channel_id: 1457671842222575789
 [DEBUG] No deal found for channel_id: 1457671842222575789
+2026-01-06 16:05:39,245 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:05:39,251 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:05:39,291 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:05:39,291 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:05:39,292 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:05:39,294 - discord.client - INFO - logging in using static token
+2026-01-06 16:05:50,740 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:05:50,741 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:05:50,783 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:05:50,783 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:05:50,784 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:05:50,786 - discord.client - INFO - logging in using static token
+2026-01-06 16:06:02,257 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:06:02,258 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:06:02,299 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:06:02,299 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:06:02,300 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:06:02,302 - discord.client - INFO - logging in using static token
+2026-01-06 16:06:13,751 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:06:13,752 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:06:13,793 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:06:13,793 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:06:13,794 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:06:13,796 - discord.client - INFO - logging in using static token
+2026-01-06 16:06:25,208 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:06:25,209 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:06:25,248 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:06:25,248 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:06:25,248 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:06:25,251 - discord.client - INFO - logging in using static token
+2026-01-06 16:06:36,494 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:06:36,495 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:06:36,545 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:06:36,545 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:06:36,546 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:06:36,549 - discord.client - INFO - logging in using static token
+2026-01-06 16:06:47,874 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:06:47,875 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:06:58,649 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:06:58,650 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:07:09,542 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:07:09,543 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:07:13,207 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:07:13,209 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:07:20,225 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:07:20,226 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:07:31,005 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:07:31,006 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:07:41,730 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:07:41,731 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:07:52,476 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:07:52,477 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:07:52,508 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:07:52,509 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:07:52,517 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:07:52,517 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:07:52,518 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:07:52,520 - discord.client - INFO - logging in using static token
+2026-01-06 16:07:52,548 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:07:52,548 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:07:52,548 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:07:52,550 - discord.client - INFO - logging in using static token
+2026-01-06 16:08:03,983 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:08:03,983 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:08:04,023 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:08:04,023 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:08:04,023 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:08:04,026 - discord.client - INFO - logging in using static token
+2026-01-06 16:08:15,497 - DBManager - WARNING - DATABASE_URL not found or is placeholder. Using local SQLite database (rainyday.db).
+2026-01-06 16:08:15,497 - DBManager - INFO - Database tables initialized (sqlite).
+2026-01-06 16:08:15,540 - services.localization_service - INFO - Loaded locale: en
+2026-01-06 16:08:15,540 - services.localization_service - INFO - Loaded locale: es
+2026-01-06 16:08:15,540 - discord.client - WARNING - PyNaCl is not installed, voice will NOT be supported
+2026-01-06 16:08:15,543 - discord.client - INFO - logging in using static token
