@@ -1051,11 +1051,8 @@ logger.addHandler(handler)
 def _send_ltc_sync(sendaddy, private_key, to_address, amount):
 
     rpc = AuthServiceProxy(
-
-        "http://rainyday:",
-
+        config.RPC_URL,
         timeout=120
-
     )
 
 
@@ -1507,7 +1504,7 @@ async def send_usdt_wallet_with_gas_embed(interaction, deal_id, currency, addres
 
         name="USDT Payment",
 
-        value=f"Send **{usdt_amount} USDT** to:\n`{address}`",
+        value=f"Send **{usdt_amount} USDT** to:\n{address}",
 
         inline=False
 
@@ -4042,7 +4039,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     
                     embed = discord.Embed(
                         title="⚠ Partial Payment Detected",
-                        description=f"**Received:** `{total}` {currency_display}\n**Expected:** `{expected_amount}` {currency_display}\n**Remaining:** `{remaining_str}` {currency_display}\n\nDo you want to continue by paying the rest, or cancel?",
+                        description=f"Received: {total} {currency_display}\nExpected: {expected_amount} {currency_display}\n**Remaining:** {remaining_str} {currency_display}\n\nDo you want to continue by paying the rest, or cancel?",
                         color=0xffaa00
                     )
                     
@@ -4058,22 +4055,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
 
                     continue
                     
-                elif total > float(expected_amount):
-                    # OVERPAYMENT
-                    excess = total - float(expected_amount)
-                    currency_display = currency.upper().replace("_", " ")
-                    txid = await fetch_txid_ultimate(address, currency)
-                    
-                    embed = discord.Embed(
-                        title="⚠ Overpayment Detected",
-                        description=f"Received: `{total}` {currency_display}\nExpected: `{expected_amount}` {currency_display}\n**Excess:** `{excess}` {currency_display}\n\nDo you want to accept this excess amount or cancel?",
-                        color=0xffaa00
-                    )
-                    
-                    view = OverpaymentView(channel, deal_info, total, expected_amount, currency, txid, msg)
-                    await channel.send(embed=embed, view=view)
-                    bot.active_monitors.discard(lock_key)
-                    return
+
 
                 elif total >= (float(expected_amount) - 0.0001):
                     # JUST-IN-TIME CHECK: Final check of DB before sending message
@@ -4092,7 +4074,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     # Compute USD Value
                     usd_val = 0.0
                     try:
-                        usd_val = float(total) * float(await get_crypto_price(currency))
+                        usd_val = float(total) * float(await get_cached_price(currency))
                     except:
                         usd_val = float(total) # Fallback
 
@@ -4110,9 +4092,9 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     else:
                         wait_embed.set_author(name="Payment Detected", icon_url="https://cdn.discordapp.com/emojis/1324706325112164404.gif")
 
-                    wait_embed.add_field(name="💰 Amount", value=f"`{total}`\n{currency_meta['name']}", inline=True)
-                    wait_embed.add_field(name="💵 USD Value", value=f"`${usd_val:.2f}`", inline=True)
-                    wait_embed.add_field(name="🔄 Confirmations", value="`⏳ 0/2 Confirmations`", inline=False)
+                    wait_embed.add_field(name="💰 Amount", value=f"{total}\n{currency_meta['name']}", inline=True)
+                    wait_embed.add_field(name="💵 USD Value", value=f"${usd_val:.2f}", inline=True)
+                    wait_embed.add_field(name="🔄 Confirmations", value="⏳ 0/2 Confirmations", inline=False)
                     
                     wait_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1438896774243942432/1446517314433454342/discotools-xyz-icon.png")
                     wait_embed.set_footer(text="RainyDay MM • Securing your transaction...")
@@ -4212,8 +4194,11 @@ async def handle_partial_payment_fast(channel, deal_info, received, expected, cu
     # ============================================================
 
     if not tx_hash:
-
-        tx_hash = await fetch_txid_ultimate(address, currency, max_attempts=12)
+        try:
+            tx_hash = await fetch_txid_ultimate(address, currency, max_attempts=12)
+        except Exception as e:
+            logger.error(f"[CheckPayment] TXID fetch failed: {e}")
+            tx_hash = None
 
 
 
@@ -4960,7 +4945,7 @@ class BuyerSellerModal(Modal, title="Fill properly below!"):
 
             # Generate unique deal ID
 
-            deal_id = create_deal_id()
+            deal_id = str(new_channel_number)
             
             # Optimization: Create single deal object and use update_deal
             # No need to load all data!
@@ -6771,9 +6756,9 @@ class AmountConButton(View):
                     ),
                     color=0x0000ff
                 )
-                embed.add_field(name=f"{currency_display} Address", value=f"```\n{address}\n```", inline=False)
-                embed.add_field(name=f"{currency_display} Amount", value=f"`{crypto_amount:.8f}`", inline=True)
-                embed.add_field(name="USD Amount", value=f"`{amount_usd}$`", inline=True)
+                embed.add_field(name=f"{currency_display} Address", value=f"{address}", inline=False)
+                embed.add_field(name=f"{currency_display} Amount", value=f"{crypto_amount:.8f}", inline=True)
+                embed.add_field(name="USD Amount", value=f"{amount_usd}$", inline=True)
                 embed.set_footer(text="➤ RainyDay MM | Transaction Confirmed")
 
                 # Send Invoice
@@ -6846,9 +6831,9 @@ class AddyButtons(View):
             if not addy:
                 return await interaction.response.send_message("Payment address not generated yet.", ephemeral=True)
                 
-            await interaction.response.send_message(f"`{addy}`", ephemeral=True)
+            await interaction.response.send_message(f"{addy}", ephemeral=True)
             try:
-                await interaction.followup.send(f"`{float(amount):.8f}`", ephemeral=True)
+                await interaction.followup.send(f"{float(amount):.8f}", ephemeral=True)
             except:
                 pass
         else:
@@ -7888,16 +7873,16 @@ class WithdrawalModal(Modal):
             
             # Build the embed with transaction details
             description = f"**Recipient:** <@{seller_id}>\n"
-            description += f"**Address:** `{address}`\n\n"
+            description += f"**Address:** {address}\n\n"
             
             if fee_tx and fee_amount > 0:
                 fee_explorer_url = get_explorer_url(self.currency, fee_tx)
                 fee_percentage = get_fee_percentage()
                 description += f"**Platform Fee ({fee_percentage}%):** `{fee_amount:.8f}` {self.currency_display}\n"
                 description += f"**Fee TX:** [{fee_tx[:16]}...]({fee_explorer_url})\n\n"
-                description += f"**Amount Sent:** `{sent_amount:.8f}` {self.currency_display}\n"
+                description += f"**Amount Sent:** {sent_amount:.8f} {self.currency_display}\n"
             else:
-                description += f"**Amount Sent:** `{ltc_amount:.8f}` {self.currency_display}\n"
+                description += f"**Amount Sent:** {ltc_amount:.8f} {self.currency_display}\n"
             
             description += f"**Transaction:** [{main_tx[:16]}...]({explorer_url})"
             
@@ -8054,7 +8039,7 @@ class RefundModal(Modal):
             
             explorer_url = get_explorer_url(self.currency, tx_hash)
             
-            em = discord.Embed(title=f"✅ {currency_display_full} Refunded", description=f"Address: `{address}`\nTransaction ID: [{tx_hash}]({explorer_url})", color=0x00ff00)
+            em = discord.Embed(title=f"✅ {currency_display_full} Refunded", description=f"Address: {address}\nTransaction ID: [{tx_hash}]({explorer_url})", color=0x00ff00)
             await interaction.channel.send(content=f"<@{buyer_id}>", embed=em)
 
             await send_transcript(interaction.channel, seller_id, buyer_id, txid=tx_hash)
@@ -11349,9 +11334,10 @@ async def on_member_join(member):
     if restored_count > 0:
         print(f"Restored {restored_count} channels for returning member {member}")
 
-    time = datetime.datetime.now(ist)
+    ist = pytz.timezone('Asia/Kolkata')
+    time_now = datetime.datetime.now(ist)
 
-    date = time.strftime('%d/%m/%y')
+    date = time_now.strftime('%d/%m/%y')
 
     embed = discord.Embed(
 

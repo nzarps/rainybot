@@ -170,6 +170,19 @@ def save_deal_field_sync(deal_id, field, value):
         return False
 
 def load_counter():
+    # Sync with counter.json (User Request: "old stats")
+    file_val = 0
+    try:
+        import os
+        if os.path.exists("counter.json"):
+            with open("counter.json", "r") as f:
+                content = f.read().strip()
+                if content:
+                    file_val = int(content)
+    except Exception as e:
+        logger.error(f"Failed to read counter.json: {e}")
+
+    db_val = 0
     with db.get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(f"SELECT value FROM config WHERE key={db.p}", ('deal_counter',))
@@ -177,10 +190,19 @@ def load_counter():
         if db.db_type == "sqlite":
             cursor.close()
         if row:
-            return int(row[0])
-        return 0
+            db_val = int(row[0])
+    
+    # Return max value and ensure DB is synced
+    final_val = max(file_val, db_val)
+    
+    # If file was higher, update DB
+    if file_val > db_val:
+        save_counter(final_val) # This will update DB and overwrite file again (safe)
+        
+    return final_val
 
 def save_counter(counter):
+    # Save to DB
     with db.session() as conn:
         cursor = conn.cursor()
         cursor.execute(f"""
@@ -192,6 +214,13 @@ def save_counter(counter):
         """, ('deal_counter', str(counter)))
         if db.db_type == "sqlite":
             cursor.close()
+            
+    # Save to counter.json
+    try:
+        with open("counter.json", "w") as f:
+            f.write(str(counter))
+    except Exception as e:
+        logger.error(f"Failed to write counter.json: {e}")
 
 def get_deal_by_dealid(deal_id):
     """Fetch deal from cache (Fast)"""
