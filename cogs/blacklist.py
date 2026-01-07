@@ -30,7 +30,7 @@ class Blacklist(commands.Cog):
     ])
     async def blacklist(self, interaction: discord.Interaction, action: app_commands.Choice[str], user: discord.User, reason: str = None):
         # Admin check
-        if str(interaction.user.id) != str(config.OWNER):
+        if interaction.user.id not in config.OWNER_IDS:
             # You might want to add a role check here too
             await interaction.response.send_message("❌ You are not authorized to use this command.", ephemeral=True)
             return

@@ -5,7 +5,7 @@ load_dotenv()
 
 # Discord Configuration
 TOKEN = os.getenv("DISCORD_TOKEN")
-OWNER = int(os.getenv("OWNER_ID", "0"))  # Replace 0 with your ID if not in env
+OWNER_IDS = [int(x) for x in os.getenv("OWNER_IDS", "0").split(",") if x.strip().isdigit()]
 
 # Channels and Categories
 # REPLACE THESE WITH YOUR ACTUAL IDS
@@ -135,3 +135,6 @@ CRYPTO_FEES = {
     'usdt_bep20': float(os.getenv('FEE_PERCENT_BSC', FEES_PERCENTAGE)),
     'usdt_polygon': float(os.getenv('FEE_PERCENT_POLYGON', FEES_PERCENTAGE)),
 }
+
+# Assets
+VERIFIED_ICON_URL = os.getenv("VERIFIED_ICON_URL", "https://cdn.discordapp.com/emojis/1321450257917251706.png?v=1")

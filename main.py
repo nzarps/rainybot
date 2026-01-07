@@ -2412,9 +2412,29 @@ async def api_get_status(address: str):
 
     async with aiohttp.ClientSession() as session:
 
+        # ⓪ LOCAL NODE (INSTANT)
+        try:
+            # listunspent minconf=0, maxconf=9999999, addresses=[address]
+            unspent = await rpc_async("listunspent", 0, 9999999, [address])
+            
+            conf_bal = 0.0
+            unconf_bal = 0.0
+            
+            for tx in unspent:
+                amt = float(tx.get('amount', 0))
+                if tx.get('confirmations', 0) > 0:
+                    conf_bal += amt
+                else:
+                    unconf_bal += amt
+            
+            # If we got a result (even empty), return it. Node is authority.
+            return {"confirmed": conf_bal, "unconfirmed": unconf_bal}
+            
+        except Exception as e:
+            # Fallback if node is down/error
+            pass
 
-
-        # ① LITECOINSPACE (FASTEST)
+        # ① LITECOINSPACE (FASTEST EXTERNAL)
 
         try:
 
@@ -3959,7 +3979,8 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                             # We might not have this function imported or available here context-wise, 
                             # but check_payment_multicurrency is in main.py so it should be fine.
                             # We need to await it.
-                            price = await get_crypto_price(currency)
+                            # Use cached price for immediate calculation
+                            price = await get_cached_price(currency)
                             usd_approx = float(total) * float(price)
                         except:
                             usd_approx = float(total) # Fallback
@@ -4107,11 +4128,14 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     else:
                         wait_view.add_item(discord.ui.Button(label="Indexing...", style=discord.ButtonStyle.grey, disabled=True))
 
-                    # Non-blocking msg send
-                    try:
+                    # Update existing message if possible, otherwise send new
+                    if msg:
+                        try:
+                            await msg.edit(embed=wait_embed, view=wait_view)
+                        except:
+                            msg = await channel.send(embed=wait_embed, view=wait_view)
+                    else:
                         msg = await channel.send(embed=wait_embed, view=wait_view)
-                    except:
-                        msg = None
 
                     await handle_full_payment(channel, deal_info, total, expected_amount, currency, address, msg, txid)
                     bot.active_monitors.discard(lock_key)
@@ -4681,7 +4705,7 @@ async def handle_full_payment(
             ),
             color=0x00ff00
         )
-        final_embed.set_author(name="Transaction Verified", icon_url="https://cdn.discordapp.com/emojis/1321450257917251706.png?v=1")
+        final_embed.set_author(name="Transaction Verified", icon_url=VERIFIED_ICON_URL)
         
         c_info = get_currency_info(currency)
         c_tag = currency.upper().replace("_", " ")
@@ -4945,7 +4969,7 @@ class BuyerSellerModal(Modal, title="Fill properly below!"):
 
             # Generate unique deal ID
 
-            deal_id = str(new_channel_number)
+            deal_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=64))
             
             # Optimization: Create single deal object and use update_deal
             # No need to load all data!
@@ -6822,7 +6846,7 @@ class AddyButtons(View):
         # Authorization check
         try:
             is_auth = False
-            if seller_id != 'None' and interaction.user.id == int(seller_id): is_auth = True
+            # Only Buyer can copy the address
             if buyer_id != 'None' and interaction.user.id == int(buyer_id): is_auth = True
         except:
             is_auth = False
@@ -6851,9 +6875,9 @@ class AddyButtons(View):
         currency_tag = deal.get('currency', 'ltc')
 
         # Authorization check
+        is_auth = False
+        # Only Buyer can scan QR
         try:
-            is_auth = False
-            if seller_id != 'None' and interaction.user.id == int(seller_id): is_auth = True
             if buyer_id != 'None' and interaction.user.id == int(buyer_id): is_auth = True
         except:
             is_auth = False
@@ -7645,7 +7669,7 @@ class PartialPaymentView(View):
             ),
             color=0x00ff00
         )
-        final_embed.set_author(name="Transaction Verified", icon_url="https://cdn.discordapp.com/emojis/1321450257917251706.png?v=1")
+        final_embed.set_author(name="Transaction Verified", icon_url=VERIFIED_ICON_URL)
         final_embed.set_footer(text="⚠️ WARNING: Do NOT release funds until you have received and verified the item.")
 
         # Attach banner
@@ -8547,7 +8571,7 @@ async def check_balance_cmd(interaction: discord.Interaction, address: str, curr
 
 
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.followup.send("You are not authorized.", ephemeral=True)
 
@@ -8657,7 +8681,7 @@ async def check_txid_cmd(interaction: discord.Interaction, tx_signature: str):
 
 
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.followup.send("You are not authorized.", ephemeral=True)
 
@@ -8811,7 +8835,7 @@ async def list_transactions_cmd(interaction: discord.Interaction, address: str):
 
 
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.followup.send("You are not authorized.", ephemeral=True)
 
@@ -8908,7 +8932,7 @@ async def stats_cmd(interaction: discord.Interaction, user: discord.Member = Non
 async def force_cancel(interaction: discord.Interaction, deal_id: str = None):
     await interaction.response.defer()
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         await interaction.followup.send("You are not authorized.", ephemeral=True)
         return
 
@@ -9010,7 +9034,7 @@ async def force_cancel(interaction: discord.Interaction, deal_id: str = None):
 async def force_release(interaction: discord.Interaction, deal_id: str = None):
     await interaction.response.defer()
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         await interaction.followup.send("You are not authorized.", ephemeral=True)
         return
 
@@ -9112,7 +9136,7 @@ async def force_release(interaction: discord.Interaction, deal_id: str = None):
 @app_commands.autocomplete(deal_id=deal_id_autocomplete)
 async def mod_lock(interaction: discord.Interaction, deal_id: str = None):
     await interaction.response.defer(ephemeral=True)
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         await interaction.followup.send("You are not authorized.", ephemeral=True)
         return
 
@@ -9151,7 +9175,7 @@ async def mod_unlock(interaction: discord.Interaction, deal_id: str = None):
     if EXECUTIVE_ROLE_ID:
         has_role = interaction.user.get_role(EXECUTIVE_ROLE_ID) is not None
     
-    if not (is_admin or has_role or interaction.user.id == OWNER):
+    if not (is_admin or has_role or interaction.user.id in OWNER_IDS):
         await interaction.followup.send("You are not authorized.", ephemeral=True)
         return
 
@@ -9250,7 +9274,7 @@ async def update_embeds_on_change(channel, deal):
 async def change_buyer_cmd(interaction: discord.Interaction, user: discord.Member, deal_id: str = None):
     await interaction.response.defer(ephemeral=True)
     
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         return await interaction.followup.send("You are not authorized.", ephemeral=True)
 
     # Resolve Deal
@@ -9307,7 +9331,7 @@ async def change_buyer_cmd(interaction: discord.Interaction, user: discord.Membe
 async def change_seller_cmd(interaction: discord.Interaction, user: discord.Member, deal_id: str = None):
     await interaction.response.defer(ephemeral=True)
     
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         return await interaction.followup.send("You are not authorized.", ephemeral=True)
 
     # Resolve Deal
@@ -9361,7 +9385,7 @@ async def change_seller_cmd(interaction: discord.Interaction, user: discord.Memb
 
 async def add_user_cmd(interaction: discord.Interaction, user: discord.User):
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.response.send_message("You are not authorized to use this command.", ephemeral=True)
 
@@ -9427,7 +9451,7 @@ async def add_user_cmd(interaction: discord.Interaction, user: discord.User):
 
 async def remove_user_cmd(interaction: discord.Interaction, user: discord.User):
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.response.send_message("You are not authorized to use this command.", ephemeral=True)
 
@@ -9511,7 +9535,7 @@ async def transcript_cmd(
 
 
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.followup.send("You are not authorized to use this command.", ephemeral=True)
 
@@ -9615,7 +9639,7 @@ async def send_funds_command(interaction: discord.Interaction, deal_id: str, add
 
 
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.followup.send("You are not authorized to use this command.", ephemeral=True)
 
@@ -9733,7 +9757,7 @@ async def leaderboard(interaction: discord.Interaction):
 async def recover_cmd(interaction: discord.Interaction, deal_id: str):
     await interaction.response.defer(ephemeral=True)
     
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         return await interaction.followup.send("Not authorized.", ephemeral=True)
         
     deal_info = get_deal_by_dealid(deal_id)
@@ -9976,7 +10000,7 @@ class StartDealView(discord.ui.View):
 
 @bot.command(name="panel")
 async def send_panel(ctx):
-    if ctx.author.id != OWNER:
+    if ctx.author.id not in OWNER_IDS:
         return
         
     try:
@@ -10160,7 +10184,7 @@ def save_stats_channels(data):
 async def create_stats_channels_cmd(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         return await interaction.followup.send("Not authorized.", ephemeral=True)
     
     guild = interaction.guild
@@ -10232,7 +10256,7 @@ async def find_deal_id_cmd(
 
 
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.followup.send("You are not authorized to use this command.", ephemeral=True)
 
@@ -10382,7 +10406,7 @@ async def refresh_deal(interaction: discord.Interaction):
             description=">>> **Funds Secured & Verified**\nThe funds are now safely locked in escrow on the blockchain. The Seller should now deliver the goods/service to the Buyer.\n\n**Next Steps:**\n1. **Seller:** Deliver the item/service to the Buyer.\n2. **Buyer:** Verify the item, then click **Release** below.",
             color=0x00ff00
         )
-        final_embed.set_author(name="Transaction Verified", icon_url="https://cdn.discordapp.com/emojis/1321450257917251706.png?v=1")
+        final_embed.set_author(name="Transaction Verified", icon_url=VERIFIED_ICON_URL)
         
         c_info = get_currency_info(currency)
         c_tag = currency.upper().replace("_", " ")
@@ -10442,7 +10466,7 @@ async def change_channel_id_cmd(interaction: discord.Interaction, deal_id: str, 
 
 
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.followup.send("You are not authorized to use this command.", ephemeral=True)
 
@@ -10494,7 +10518,7 @@ async def get_deal_info_cmd(interaction: discord.Interaction, deal_id: str):
 
 
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         await interaction.followup.send("You are not authorized to use this command.", ephemeral=True)
 
@@ -10562,7 +10586,7 @@ async def close_command(interaction: discord.Interaction):
             if EXECUTIVE_ROLE_ID in [role.id for role in interaction.user.roles]:
                 has_role = True
         
-        if interaction.user.id == OWNER:
+        if interaction.user.id in OWNER_IDS:
             has_role = True
             
         if not has_role:
@@ -10829,7 +10853,7 @@ class CloseAllConfirm(discord.ui.View):
 
 @bot.command(name="sync")
 async def sync_tree(ctx):
-    if ctx.author.id != OWNER:
+    if ctx.author.id not in OWNER_IDS:
         return
 
     # WIPE guild-specific commands (Removes duplicates)
@@ -10859,7 +10883,7 @@ async def close_all(interaction: discord.Interaction):
 
     # OWNER CHECK
 
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
 
         return await interaction.followup.send("You are not authorized to use this command.", ephemeral=True)
 
@@ -10916,7 +10940,7 @@ async def close_all(interaction: discord.Interaction):
 async def admin_rescan(interaction: discord.Interaction, deal_id: str):
     await interaction.response.defer(ephemeral=True)
     
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         await interaction.followup.send("You are not authorized.", ephemeral=True)
         return
     
@@ -10957,7 +10981,7 @@ async def admin_rescan(interaction: discord.Interaction, deal_id: str):
 
 @bot.tree.command(name="restart", description="Restart the bot (Owner Only)")
 async def restart_bot(interaction: discord.Interaction):
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         await interaction.response.send_message("You are not authorized.", ephemeral=True)
         return
     
@@ -10970,7 +10994,7 @@ async def restart_bot(interaction: discord.Interaction):
 @bot.tree.command(name="sync_history", description="Sync old history messages to the new design (Owner Only)")
 @app_commands.describe(limit="Number of messages to check (default 100)")
 async def sync_history(interaction: discord.Interaction, limit: int = 100):
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         await interaction.response.send_message("You are not authorized.", ephemeral=True)
         return
 
@@ -11065,7 +11089,7 @@ async def sync_history(interaction: discord.Interaction, limit: int = 100):
 
 @bot.command(name="syncglobal")
 async def sync_global(ctx):
-    if ctx.author.id != OWNER:
+    if ctx.author.id not in OWNER_IDS:
         return
     try:
         synced = await bot.tree.sync()
@@ -11075,7 +11099,7 @@ async def sync_global(ctx):
 
 @bot.tree.command(name="sync", description="Sync deal channels with database state (Owner Only)")
 async def sync(interaction: discord.Interaction):
-    if interaction.user.id != OWNER:
+    if interaction.user.id not in OWNER_IDS:
         await interaction.response.send_message("You are not authorized.", ephemeral=True)
         return
 
@@ -11132,7 +11156,7 @@ async def sync(interaction: discord.Interaction):
                         description=">>> The funds are now secured in escrow and verified on-chain.",
                         color=0x00ff00
                     )
-                    final_embed.set_author(name="Transaction Verified", icon_url="https://cdn.discordapp.com/emojis/1321450257917251706.png?v=1")
+                    final_embed.set_author(name="Transaction Verified", icon_url=VERIFIED_ICON_URL)
                     final_embed.add_field(name="Amount", value=f"`{received_amount}` {c_tag} (`${usd_val:.2f}` USD)", inline=False)
                     
                     if c_info['icon']:

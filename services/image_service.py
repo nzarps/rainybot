@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw, ImageOps, ImageFont
 import aiohttp
 import base64
 import logging
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ async def generate_handshake_image(buyer_pfp, seller_pfp):
         seller_bytes = await fetch_asset(seller_pfp, session)
         
         # Also fetch the shield icon dynamically to avoid b64 corruption
-        shield_url = "https://cdn.discordapp.com/emojis/1321450257917251706.png?v=1"
+        shield_url = config.VERIFIED_ICON_URL
         shield_bytes = await fetch_asset(shield_url, session)
 
     return await asyncio.to_thread(_generate_sync, buyer_bytes, seller_bytes, shield_bytes)

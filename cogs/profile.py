@@ -136,7 +136,7 @@ class Profile(commands.Cog):
         
         # Elite Header
         # Using a more minimalist approach for the rank and standing
-        owner_badge = " 👑 **OWNER**" if target.id == config.OWNER else ""
+        owner_badge = " 👑 **OWNER**" if target.id in config.OWNER_IDS else ""
         
         embed.description = (
             f"**{rank_name.upper()}** ┃ `RANK #{global_rank}{rank_suffix}`{owner_badge}\n"

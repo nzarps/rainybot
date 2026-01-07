@@ -924,7 +924,7 @@ class Tools(commands.Cog):
     @app_commands.autocomplete(currency=currency_autocomplete)
     async def track_transaction(self, interaction: discord.Interaction, txid: str, currency: str, confirmations: int = 1):
         """Admin only command to track a transaction."""
-        if str(interaction.user.id) != str(config.OWNER):
+        if interaction.user.id not in config.OWNER_IDS:
             await interaction.response.send_message("❌ You are not authorized to use this command.", ephemeral=True)
             return
 
