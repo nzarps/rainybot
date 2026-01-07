@@ -4632,7 +4632,7 @@ async def handle_full_payment(
             try:
                 # 1. RETRY TXID if missing
                 if not current_txid:
-                    current_txid = await fetch_txid_ultimate(address, currency)
+                    current_txid = await fetch_txid_ultimate(address, currency, max_attempts=1)
                     if current_txid:
                         explorer_url = get_explorer_url(currency, current_txid)
                 
