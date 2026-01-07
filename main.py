@@ -4604,6 +4604,30 @@ async def handle_full_payment(
         # CONFIRMATION & TXID RETRY LOOP
         current_txid = tx_hash
         
+        # [FIX] Ensure embed structure is valid for the loop (must have 3 fields for fields[2] access)
+        if len(wait_embed.fields) < 3:
+            # Recreate the correct embed structure
+            wait_embed = discord.Embed(
+                title="Payment Detected",
+                description=f"We've detected payment of **{received_amount} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
+                color=0xffaa00
+            )
+            if currency_meta['icon']:
+                wait_embed.set_author(name="✨ Verifying Transaction", icon_url=currency_meta['icon'])
+            else:
+                wait_embed.set_author(name="✨ Verifying Transaction", icon_url="https://cdn.discordapp.com/emojis/1324706325112164404.gif")
+
+            wait_embed.add_field(name="💰 Amount", value=f"`{received_amount}`\n{currency_meta['name']}", inline=True)
+            wait_embed.add_field(name="💵 USD Value", value=f"`${usd_val:.2f}`", inline=True)
+            wait_embed.add_field(name="🔄 Confirmations", value="`⏳ 0/2 Confirmations`", inline=False)
+            wait_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1438896774243942432/1446517314433454342/discotools-xyz-icon.png")
+            wait_embed.set_footer(text="RainyDay MM • Securing your transaction...")
+            
+            # Update the message to reflect the fixed embed
+            if msg:
+                try: await msg.edit(embed=wait_embed)
+                except: pass
+        
         for i in range(300): # Max 10 mins (300 * 2s = 600s)
             try:
                 # 1. RETRY TXID if missing
@@ -4770,7 +4794,25 @@ async def handle_full_payment(
         if file_attachment:
             send_kwargs["file"] = file_attachment
 
-        await channel.send(**send_kwargs)
+        try:
+            await channel.send(**send_kwargs)
+        except Exception as send_e:
+            print(f"[VERIFY] Failed to send confirmation embed with attachment: {send_e}")
+            # Fallback: Remove file and try again
+            if "file" in send_kwargs:
+                del send_kwargs["file"]
+                try:
+                    # Also consider removing image from embed if it refers to attachment (it does: "attachment://secure_deal.png")
+                    # If we remove the file, we should unset the image url to avoid broken image
+                    final_embed.set_image(url=None)
+                    # If we had a thumbnail and removed it for the banner, we might want to restore it, 
+                    # but typically we just want the message to go through.
+                    # Let's just ensure no broken image link.
+                    send_kwargs["embed"] = final_embed 
+                    await channel.send(**send_kwargs)
+                    print(f"[VERIFY] Successfully sent confirmation embed (fallback mode).")
+                except Exception as fallback_e:
+                    print(f"[VERIFY] Critical: Failed to send confirmation embed even after fallback: {fallback_e}")
     finally:
         bot.active_verifications.discard(lock_key)
 
