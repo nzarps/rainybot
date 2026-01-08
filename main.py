@@ -8396,7 +8396,7 @@ class CancelConButton(View):
 
 
 
-        if interaction.user.id == buyer_id:  # RECEIVER cancels
+        if interaction.user.id == seller_id:  # SENDER cancels (fixing the logic)
 
             await interaction.response.defer()
 
