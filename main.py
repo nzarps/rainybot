@@ -2510,6 +2510,54 @@ async def api_get_status(address: str):
 
     return {"confirmed": 0.0, "unconfirmed": 0.0}
 
+async def get_ltc_confirmations(tx_hash):
+    """
+    Get exact confirmation count for an LTC transaction.
+    Strategy: Local Node -> LitecoinSpace -> BlockCypher -> SoChain
+    """
+    if not tx_hash: return 0
+    
+    # 1. LOCAL NODE (Fastest & Most Reliable)
+    try:
+        # We try getrawtransaction with verbose=1
+        tx_data = await rpc_async("getrawtransaction", tx_hash, 1)
+        if tx_data:
+            return int(tx_data.get("confirmations", 0))
+    except:
+        pass
+
+    async with aiohttp.ClientSession() as session:
+        # 2. LITECOINSPACE
+        try:
+            url = f"https://litecoinspace.org/api/tx/{tx_hash}/status"
+            proxy_url = build_proxy_url()
+            async with session.get(url, proxy=proxy_url, timeout=2) as r:
+                if r.status == 200:
+                    d = await r.json()
+                    if d.get("confirmed"):
+                        return 2 
+        except: pass
+
+        # 3. BLOCKCYPHER
+        try:
+            url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
+            async with session.get(url, timeout=2) as r:
+                if r.status == 200:
+                    d = await r.json()
+                    return int(d.get("confirmations", 0))
+        except: pass
+
+        # 4. SOCHAIN
+        try:
+            url = f"https://sochain.com/api/v2/get_tx/LTC/{tx_hash}"
+            async with session.get(url, timeout=2) as r:
+                if r.status == 200:
+                    d = await r.json()
+                    return int(d["data"]["confirmations"])
+        except: pass
+
+    return 0
+
 
 
 async def fetch_blockcypher_status(session, address: str):
@@ -4646,8 +4694,7 @@ async def handle_full_payment(
                 # 3. CHECK CONFIRMATIONS
                 confs = 0
                 if currency == "ltc":
-                    s = await api_get_status(address)
-                    confs = int(s.get("confirmed_blocks", 0)) if s else 0
+                    confs = await get_ltc_confirmations(current_txid)
                 elif currency in ["usdt_polygon", "usdt_bep20", "ethereum"]:
                     # EVM chains have fast finality - if TXID exists, treat as confirmed
                     if current_txid:
