@@ -4557,9 +4557,9 @@ async def handle_full_payment(
         deal_data = data.get(deal_id, {})
         # If already paid or finished, stop.
         if deal_data.get('status') in ['completed', 'cancelled', 'awaiting_withdrawal'] or deal_data.get('paid'):
-            if msg:
-                try: await msg.delete()
-                except: pass
+            # if msg:
+            #     try: await msg.delete()
+            #     except: pass
             return
 
         buyer_id = deal_info['buyer']
