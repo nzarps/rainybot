@@ -2528,16 +2528,8 @@ async def get_ltc_confirmations(tx_hash):
         pass
 
     async with aiohttp.ClientSession() as session:
-        # 2. LITECOINSPACE
-        try:
-            url = f"https://litecoinspace.org/api/tx/{tx_hash}/status"
-            proxy_url = build_proxy_url()
-            async with session.get(url, proxy=proxy_url, timeout=2) as r:
-                if r.status == 200:
-                    d = await r.json()
-                    if d.get("confirmed"):
-                        return 2 
-        except: pass
+        # 2. LITECOINSPACE (Removed: API doesn't provide easy conf count without tip height, falling back to BlockCypher/SoChain)
+        pass
 
         # 3. BLOCKCYPHER
         try:
@@ -4698,8 +4690,7 @@ async def handle_full_payment(
                     confs = await get_ltc_confirmations(current_txid)
                 elif currency in ["usdt_polygon", "usdt_bep20", "ethereum"]:
                     if current_txid:
-                        rpcs = POLYGON_RPC_URLS if currency == "usdt_polygon" else (BEP20_RPC_URLS if currency == "usdt_bep20" else ETH_RPC_URLS)
-                        confs = await get_evm_confirmations(current_txid, rpcs)
+                        confs = await get_evm_confirmations(current_txid, currency)
                     else:
                         # STALL FALLBACK: If TXID indexing is slow, check direct balance
                         try:
@@ -4749,22 +4740,7 @@ async def handle_full_payment(
             await asyncio.sleep(2)
 
         # FINAL STEP: SUCCESS TRANSITION
-        # Delete passed msg reference
-        try: await msg.delete()
-        except: pass
         
-        # BROAD CLEANUP: Delete all "Verifying Transaction" / "Payment Detected" embeds
-        try:
-            async for old_msg in channel.history(limit=20):
-                if old_msg.author.id == bot.user.id and old_msg.embeds:
-                    emp = old_msg.embeds[0]
-                    if any(t in str(emp.title) for t in ["Verifying Transaction", "Payment Detected"]) or \
-                       any(t in str(emp.author.name) if emp.author else '' for t in ["Payment Detected"]):
-                        try: await old_msg.delete()
-                        except: pass
-        except Exception as cleanup_err:
-            print(f"[CLEANUP] Error during broad cleanup: {cleanup_err}")
-
         final_embed = discord.Embed(
             title="Deal Confirmed ✅",
             description=(
@@ -4843,24 +4819,25 @@ async def handle_full_payment(
             send_kwargs["file"] = file_attachment
 
         try:
-            await channel.send(**send_kwargs)
-        except Exception as send_e:
-            print(f"[VERIFY] Failed to send confirmation embed with attachment: {send_e}")
-            # Fallback: Remove file and try again
-            if "file" in send_kwargs:
-                del send_kwargs["file"]
-                try:
-                    # Also consider removing image from embed if it refers to attachment (it does: "attachment://secure_deal.png")
-                    # If we remove the file, we should unset the image url to avoid broken image
-                    final_embed.set_image(url=None)
-                    # If we had a thumbnail and removed it for the banner, we might want to restore it, 
-                    # but typically we just want the message to go through.
-                    # Let's just ensure no broken image link.
-                    send_kwargs["embed"] = final_embed 
-                    await channel.send(**send_kwargs)
-                    print(f"[VERIFY] Successfully sent confirmation embed (fallback mode).")
-                except Exception as fallback_e:
-                    print(f"[VERIFY] Critical: Failed to send confirmation embed even after fallback: {fallback_e}")
+            # Attempt to edit the existing "Payment Detected" message to "Deal Confirmed"
+            # This avoids the "deleting panel" effect.
+            await msg.edit(**send_kwargs)
+        except Exception as edit_e:
+            print(f"[VERIFY] Edit failed ({edit_e}), falling back to direct send.")
+            try:
+                await channel.send(**send_kwargs)
+            except Exception as send_e:
+                print(f"[VERIFY] Failed to send confirmation embed with attachment: {send_e}")
+                # Fallback: Remove file and try again
+                if "file" in send_kwargs:
+                    del send_kwargs["file"]
+                    try:
+                        final_embed.set_image(url=None)
+                        send_kwargs["embed"] = final_embed 
+                        await channel.send(**send_kwargs)
+                        print(f"[VERIFY] Successfully sent confirmation embed (fallback mode).")
+                    except Exception as fallback_e:
+                        print(f"[VERIFY] Critical: Failed to send confirmation embed even after fallback: {fallback_e}")
     finally:
         bot.active_verifications.discard(lock_key)
 
@@ -6406,6 +6383,12 @@ class SendButton(discord.ui.View):
 
             deal["seller"] = "None"
             deal["buyer"] = "None"
+            
+            # Fix: Clear confirmation flags to prevent premature progress if roles are swapped
+            deal["amt_sender_confirmed"] = False
+            deal["amt_receiver_confirmed"] = False
+            deal["amount_final_embed_sent"] = False
+            
             update_deal(channel_id, deal)
             await self.update_embed(interaction, deal)
         except Exception as e:
@@ -6735,6 +6718,11 @@ class AmountConButton(View):
 
                         data[deal_id]["amount"] = amount
 
+                        # Fix: Clear previous confirmations when amount changes
+                        data[deal_id]["amt_sender_confirmed"] = False
+                        data[deal_id]["amt_receiver_confirmed"] = False
+                        data[deal_id]["amount_final_embed_sent"] = False
+
                         save_all_data(data)
 
 
@@ -6824,26 +6812,27 @@ class AmountConButton(View):
         # 2. Check if BOTH confirmed
         if current_deal.get("amt_sender_confirmed") and current_deal.get("amt_receiver_confirmed"):
             if not current_deal.get("amount_final_embed_sent"):
-                current_deal["amount_final_embed_sent"] = True
-                save_all_data(data)
-
-                # Remove buttons from the confirmation message
-                try:
-                    await interaction.message.edit(view=None)
-                except:
-                    pass
-
+                
                 amount_usd = float(current_deal.get("amount", 0))
                 currency = current_deal.get("currency", "ltc")
 
-                # Generate payment info
-                crypto_amount = await usd_to_currency_amount(amount_usd, currency)
-                wallet = await generate_wallet_for_currency(deal_id, currency)
-                address = wallet['address']
-                private_key = wallet['private_key']
+                # Generate payment info FIRST to catch errors
+                try:
+                    crypto_amount = await usd_to_currency_amount(amount_usd, currency)
+                    wallet = await generate_wallet_for_currency(deal_id, currency)
+                    
+                    if not wallet:
+                        raise Exception("Wallet generation returned None")
+                        
+                    address = wallet['address']
+                    private_key = wallet['private_key']
+                    
+                except Exception as e:
+                    print(f"Error generating wallet/crypto amount: {e}")
+                    return await interaction.followup.send("Error initializing payment system. Please try confirming again.", ephemeral=True)
 
-                # Store wallet info
-                data = load_all_data()
+                # Store wallet info (BUT DO NOT mark as sent yet, in case sending fails)
+                data = load_all_data() 
                 if deal_id in data:
                     data[deal_id].update({
                         "address": address,
@@ -6853,6 +6842,12 @@ class AmountConButton(View):
                         "last_activity": time.time()
                     })
                     save_all_data(data)
+
+                # Remove buttons from the confirmation message
+                try:
+                    await interaction.message.edit(view=None)
+                except:
+                    pass
 
                 # Format display
                 currency_display = {
@@ -6878,6 +6873,14 @@ class AmountConButton(View):
 
                 # Send Invoice
                 await interaction.channel.send(content=f"<@{buyer_id}>", embed=embed, view=AddyButtons())
+
+                # NOW mark as sent, since we successfully sent the message
+                current_deal["amount_final_embed_sent"] = True
+                
+                # Update DB with flag
+                if deal_id in data:
+                    data[deal_id]["amount_final_embed_sent"] = True
+                    save_all_data(data)
 
                 # Payment Timeout Note
                 timeout_embed = discord.Embed(
