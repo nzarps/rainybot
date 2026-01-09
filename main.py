@@ -46,6 +46,7 @@ from crypto_utils import *
 from bot_utils import *
 from services import *
 from services.image_service import generate_handshake_image
+from utils.confirmation_utils import get_evm_confirmations, get_solana_confirmations
 from handlers import *
 from services.audit_service import audit_service
 from services.reputation_service import reputation_service
@@ -4696,9 +4697,9 @@ async def handle_full_payment(
                 if currency == "ltc":
                     confs = await get_ltc_confirmations(current_txid)
                 elif currency in ["usdt_polygon", "usdt_bep20", "ethereum"]:
-                    # EVM chains have fast finality - if TXID exists, treat as confirmed
                     if current_txid:
-                        confs = 2
+                        rpcs = POLYGON_RPC_URLS if currency == "usdt_polygon" else (BEP20_RPC_URLS if currency == "usdt_bep20" else ETH_RPC_URLS)
+                        confs = await get_evm_confirmations(current_txid, rpcs)
                     else:
                         # STALL FALLBACK: If TXID indexing is slow, check direct balance
                         try:
@@ -4717,7 +4718,7 @@ async def handle_full_payment(
                         except: pass
                 elif currency == "solana":
                     if current_txid:
-                        confs = 2
+                        confs = await get_solana_confirmations(current_txid)
                     else:
                         # Solana fallback
                         try:
@@ -6077,6 +6078,7 @@ class ConfButtons(discord.ui.View):
         if deal_id in data:
             data[deal_id]["payment_timeout"] = data[deal_id].get("payment_timeout", 1200) + (15 * 60)
             data[deal_id]["extensions"] = current_extensions + 1
+            data[deal_id]["last_activity"] = time.time()  # Prevent idle deletion
             save_all_data(data)
             
         await interaction.response.send_message(f"✅ Payment timer extended by 15 minutes! (Used {current_extensions + 1}/2)", ephemeral=False)
@@ -6927,6 +6929,14 @@ class AddyButtons(View):
         if not deal:
             return await interaction.response.send_message("Deal not found.", ephemeral=True)
             
+        # Update activity
+        try:
+            data = load_all_data()
+            if deal_id in data:
+                data[deal_id]['last_activity'] = time.time()
+                save_all_data(data)
+        except: pass
+            
         seller_id = deal.get('seller', 'None')
         buyer_id = deal.get('buyer', 'None')
         addy = deal.get('address')
@@ -6956,6 +6966,14 @@ class AddyButtons(View):
         deal_id, deal = get_deal_by_channel(interaction.channel.id)
         if not deal:
             return await interaction.response.send_message("Deal not found.", ephemeral=True)
+            
+        # Update activity
+        try:
+            data = load_all_data()
+            if deal_id in data:
+                data[deal_id]['last_activity'] = time.time()
+                save_all_data(data)
+        except: pass
             
         seller_id = deal.get('seller', 'None')
         buyer_id = deal.get('buyer', 'None')
@@ -10443,6 +10461,12 @@ async def refresh_deal(interaction: discord.Interaction):
     deal_id, deal = get_deal_by_channel(channel.id)
     if not deal:
         return await interaction.followup.send("No deal found in this channel.", ephemeral=True)
+    
+    # Update activity to prevent deletion
+    data = load_all_data()
+    if deal_id in data:
+        data[deal_id]['last_activity'] = time.time()
+        save_all_data(data)
         
     status = deal.get("status")
     paid = deal.get("paid")
