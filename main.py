@@ -61,6 +61,7 @@ rpc = AuthServiceProxy(RPC_URL)
 # GLOBAL VARIABLES
 # =====================================================
 
+TICKET_LOCK = asyncio.Lock()
 pending_force_actions = {}
 bot = commands.AutoShardedBot(command_prefix="!", intents=discord.Intents.all(), help_command=None)
 
@@ -5024,15 +5025,32 @@ class BuyerSellerModal(Modal, title="Fill properly below!"):
 
 
         try:
-            # Get next deal ID
-            counter = load_counter()
-            new_channel_number = counter + 1
-            deal_prefix = f"auto-{new_channel_number}"
-            
-            # Save new counter IMMEDIATELY
-            save_counter(new_channel_number)
-            channel = await guild.create_text_channel(name=deal_prefix, category=main_cat, overwrites=overwrites)
+            # FIX: Global Lock for Ticket Creation to prevent race conditions
+            async with TICKET_LOCK:
+                # Get next deal ID
+                counter = load_counter()
+                new_channel_number = counter + 1
+                deal_prefix = f"auto-{new_channel_number}"
+                
+                # Check for existing channel with this name (Double safety)
+                existing_channel = discord.utils.get(guild.text_channels, name=deal_prefix)
+                if existing_channel:
+                    # If it conflicts, skip ahead
+                    new_channel_number += 1
+                    deal_prefix = f"auto-{new_channel_number}"
 
+                # Save new counter IMMEDIATELY
+                save_counter(new_channel_number)
+                
+                # Safe create with error handling
+                try:
+                    channel = await guild.create_text_channel(name=deal_prefix, category=main_cat, overwrites=overwrites)
+                except discord.HTTPException as e:
+                    if e.code == 429: # Rate Limit
+                         await asyncio.sleep(2) # Wait a bit
+                         channel = await guild.create_text_channel(name=deal_prefix, category=main_cat, overwrites=overwrites)
+                    else:
+                        raise e
 
             # Generate unique deal ID
 
@@ -6778,36 +6796,47 @@ class AmountConButton(View):
 
 
     async def confirm(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-
+        # Fix: Add processing lock to prevent race conditions (double clicks)
         deal_id, deal = get_deal_by_channel(interaction.channel.id)
-        if not deal:
-            return await interaction.followup.send("Deal not found.", ephemeral=True)
+        if deal:
+            if deal.get('_processing_confirm'):
+                return await interaction.response.send_message("Processing...", ephemeral=True)
+            deal['_processing_confirm'] = True
 
-        data = load_all_data()
-        current_deal = data.get(deal_id)
-        if not current_deal:
-            return await interaction.followup.send("Deal data missing.", ephemeral=True)
+        try:
+            await interaction.response.defer()
 
-        uid = str(interaction.user.id)
-        buyer_id = str(current_deal.get("buyer"))  # SENDER
-        seller_id = str(current_deal.get("seller")) # RECEIVER
+            # deal_id, deal = get_deal_by_channel(...) # Already retrieved
+            if not deal:
+                return await interaction.followup.send("Deal not found.", ephemeral=True)
 
-        # 1. Update confirmation state
-        if uid == buyer_id: # Buyer = Sender
-            if current_deal.get("amt_sender_confirmed"):
-                return await interaction.followup.send("You have already confirmed.", ephemeral=True)
-            current_deal["amt_sender_confirmed"] = True
-            await interaction.channel.send(embed=discord.Embed(description=f"{interaction.user.mention} (Sender) has confirmed amount."))
-        elif uid == seller_id: # Seller = Receiver
-            if current_deal.get("amt_receiver_confirmed"):
-                return await interaction.followup.send("You have already confirmed.", ephemeral=True)
-            current_deal["amt_receiver_confirmed"] = True
-            await interaction.channel.send(embed=discord.Embed(description=f"{interaction.user.mention} (Receiver) has confirmed amount."))
-        else:
-            return await interaction.followup.send("You are not authorized to confirm.", ephemeral=True)
+            data = load_all_data()
+            current_deal = data.get(deal_id)
+            if not current_deal:
+                return await interaction.followup.send("Deal data missing.", ephemeral=True)
 
-        save_all_data(data)
+            uid = str(interaction.user.id)
+            buyer_id = str(current_deal.get("buyer"))  # SENDER
+            seller_id = str(current_deal.get("seller")) # RECEIVER
+
+            # 1. Update confirmation state
+            if uid == buyer_id: # Buyer = Sender
+                if current_deal.get("amt_sender_confirmed"):
+                    return await interaction.followup.send("You have already confirmed.", ephemeral=True)
+                current_deal["amt_sender_confirmed"] = True
+                await interaction.channel.send(embed=discord.Embed(description=f"{interaction.user.mention} (Sender) has confirmed amount."))
+            elif uid == seller_id: # Seller = Receiver
+                if current_deal.get("amt_receiver_confirmed"):
+                    return await interaction.followup.send("You have already confirmed.", ephemeral=True)
+                current_deal["amt_receiver_confirmed"] = True
+                await interaction.channel.send(embed=discord.Embed(description=f"{interaction.user.mention} (Receiver) has confirmed amount."))
+            else:
+                return await interaction.followup.send("You are not authorized to confirm.", ephemeral=True)
+
+            save_all_data(data)
+        finally:
+            if deal:
+                deal['_processing_confirm'] = False
 
         # 2. Check if BOTH confirmed
         if current_deal.get("amt_sender_confirmed") and current_deal.get("amt_receiver_confirmed"):
@@ -6902,6 +6931,7 @@ class AmountConButton(View):
                 bot.loop.create_task(
                     check_payment_multicurrency(address, interaction.channel, crypto_amount, data[deal_id], msg)
                 )
+
 
 
 
@@ -7085,88 +7115,95 @@ class ProceedButton(View):
         
 
         if interaction.user.id == int(seller):  # SENDER confirms
+           # Fix: Add processing lock
+           if deal.get('_processing_process'):
+               return await interaction.response.send_message("Processing...", ephemeral=True)
+           deal['_processing_process'] = True
+           
+           try:
+               await interaction.response.defer()
 
-           await interaction.response.defer()
+               await interaction.message.edit(view=None)
 
-           await interaction.message.edit(view=None)
+               embed = discord.Embed(description=f"{interaction.user.mention} has confirmed to proceed with the deal.")
 
-           embed = discord.Embed(description=f"{interaction.user.mention} has confirmed to proceed with the deal.")
+               await interaction.channel.send(embed=embed)
 
-           await interaction.channel.send(embed=embed)
-
-           while True:
-
-              await asyncio.sleep(30)
-
-              address = deal['address']
-
-              
-
-              # Check balance based on currency
-
-              if currency == 'ltc':
-
-                  bal, _ = await get_balance_async(address)
-
-              elif currency == 'usdt_bep20':
-
-                  bal = await get_usdt_balance_parallel(USDT_BEP20_CONTRACT, address, BEP20_RPC_URLS, USDT_BEP20_DECIMALS)
-
-              elif currency == 'usdt_polygon':
-
-                  bal = await get_usdt_balance_parallel(USDT_POLYGON_CONTRACT, address, POLYGON_RPC_URLS, USDT_POLYGON_DECIMALS)
-
-              elif currency == 'solana':
-
-                  bal = await get_solana_balance_parallel(address)
-
-              elif currency == 'ethereum':
-
-                  bal = await get_eth_balance_parallel(address)
-
-              else:
-
-                  bal = 0
-
+               while True:
+    
+                  await asyncio.sleep(30)
+    
+                  address = deal['address']
+    
                   
-
-              if bal > 0:
-
-                 usbal = await currency_to_usd(bal, currency)
-
-                 deal['ltc_amount'] = bal
-
-                 update_deal(interaction.channel.id, deal)
-
-                 
-
-                 currency_display = {
-
-                     'ltc': 'LTC',
-
-                     'usdt_bep20': 'USDT (BEP20)',
-
-                     'usdt_polygon': 'USDT (Polygon)',
-
-                     'solana': 'SOL',
-
-                     'ethereum': 'ETH'
-
-                 }.get(currency, 'Crypto')
-
-                 
-
-                 confirmed_embed = discord.Embed(title="Deal Confirmation", color=0x0000ff, description=">>> Payment successfully received.")
-
-                 confirmed_embed.add_field(name=f"{currency_display} Amount", value=f"{bal}", inline=False)
-
-                 confirmed_embed.add_field(name="USD Amount", value=f"{usbal}$", inline=False)
-
-                 confirmed_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1438896774243942432/1446517314433454342/discotools-xyz-icon.png?ex=693445ba&is=6932f43a&hm=379aa3c340acbe860daf7e83bea918027868d2b08b73594728a73220cbc340bf&")
-
-                 await interaction.channel.send(embed=confirmed_embed, view=ReleaseButton(), content=f"<@{buyer}> <@{seller}>")
-
-                 break
+    
+                  # Check balance based on currency
+    
+                  if currency == 'ltc':
+    
+                      bal, _ = await get_balance_async(address)
+    
+                  elif currency == 'usdt_bep20':
+    
+                      bal = await get_usdt_balance_parallel(USDT_BEP20_CONTRACT, address, BEP20_RPC_URLS, USDT_BEP20_DECIMALS)
+    
+                  elif currency == 'usdt_polygon':
+    
+                      bal = await get_usdt_balance_parallel(USDT_POLYGON_CONTRACT, address, POLYGON_RPC_URLS, USDT_POLYGON_DECIMALS)
+    
+                  elif currency == 'solana':
+    
+                      bal = await get_solana_balance_parallel(address)
+    
+                  elif currency == 'ethereum':
+    
+                      bal = await get_eth_balance_parallel(address)
+    
+                  else:
+    
+                      bal = 0
+    
+                      
+    
+                  if bal > 0:
+    
+                     usbal = await currency_to_usd(bal, currency)
+    
+                     deal['ltc_amount'] = bal
+    
+                     update_deal(interaction.channel.id, deal)
+    
+                     
+    
+                     currency_display = {
+    
+                         'ltc': 'LTC',
+    
+                         'usdt_bep20': 'USDT (BEP20)',
+    
+                         'usdt_polygon': 'USDT (Polygon)',
+    
+                         'solana': 'SOL',
+    
+                         'ethereum': 'ETH'
+    
+                     }.get(currency, 'Crypto')
+    
+                     
+    
+                     confirmed_embed = discord.Embed(title="Deal Confirmation", color=0x0000ff, description=">>> Payment successfully received.")
+    
+                     confirmed_embed.add_field(name=f"{currency_display} Amount", value=f"{bal}", inline=False)
+    
+                     confirmed_embed.add_field(name="USD Amount", value=f"{usbal}$", inline=False)
+    
+                     confirmed_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1438896774243942432/1446517314433454342/discotools-xyz-icon.png?ex=693445ba&is=6932f43a&hm=379aa3c340acbe860daf7e83bea918027868d2b08b73594728a73220cbc340bf&")
+    
+                     await interaction.channel.send(embed=confirmed_embed, view=ReleaseButton(), content=f"<@{buyer}> <@{seller}>")
+    
+                     break
+           finally:
+               deal['_processing_process'] = False
 
         else:
 
@@ -7193,102 +7230,69 @@ class ProceedButton(View):
         
 
         if interaction.user.id == int(seller):  # SENDER cancels
+            # Fix: Add processing lock
+            if deal.get('_processing_cancel'):
+                return await interaction.response.send_message("Processing...", ephemeral=True)
+            deal['_processing_cancel'] = True
 
-            await interaction.response.defer()
+            try:
+                await interaction.response.defer()
 
-            await interaction.message.edit(view=None)
+                await interaction.message.edit(view=None)
 
-            embed = discord.Embed(description=f"{interaction.user.mention} has cancelled the deal.")
+                embed = discord.Embed(description=f"{interaction.user.mention} has cancelled the deal.")
 
-            await interaction.channel.send(embed=embed)
+                await interaction.channel.send(embed=embed)
 
-            seller_id = int(deal['seller'])  # SENDER ID
+                seller_id = int(deal['seller'])  # SENDER ID
 
-            buyer_id = int(deal['buyer'])  # RECEIVER ID
+                buyer_id = int(deal['buyer'])  # RECEIVER ID
 
-            
+                currency_display = {
+                    'ltc': 'LTC',
+                    'usdt_bep20': 'USDT (BEP20)',
+                    'usdt_polygon': 'USDT (Polygon)',
+                    'solana': 'SOL',
+                    'ethereum': 'ETH'
+                }.get(currency, 'crypto')
 
-            currency_display = {
+                await interaction.channel.send(f"Please send your {currency_display} address to get the funds back. ||<@{buyer_id}>||")
 
-                'ltc': 'LTC',
+                def check(msg):
+                    return msg.author.id == buyer_id and msg.channel == interaction.channel
 
-                'usdt_bep20': 'USDT (BEP20)',
+                while True:
+                    msg = await interaction.client.wait_for("message", check=check)
+                    address = msg.content.strip()
 
-                'usdt_polygon': 'USDT (Polygon)',
-
-                'solana': 'SOL',
-
-                'ethereum': 'ETH'
-
-            }.get(currency, 'crypto')
-
-            
-
-            await interaction.channel.send(f"Please send your {currency_display} address to get the funds back. ||<@{buyer_id}>||")
-
-            def check(msg):
-
-                return msg.author.id == buyer_id and msg.channel == interaction.channel
-
-
-
-            while True:
-
-                msg = await interaction.client.wait_for("message", check=check)
-
-                address = msg.content.strip()
-
-
-
-                if await is_valid_address(address, currency):
-
-                    try:
-
-                        tx_hash = await send_funds_based_on_currency(deal, address)
-
-                        
-
-                        currency_display_full = {
-
-                            'ltc': 'Litecoin',
-
-                            'usdt_bep20': 'USDT (BEP20)',
-
-                            'usdt_polygon': 'USDT (Polygon)',
-
-                            'solana': 'Solana (SOL)',
-
-                            'ethereum': 'Ethereum (ETH)'
-
-                        }.get(currency, 'Crypto')
-
-                        
-
-                        explorer_url = get_explorer_url(currency, tx_hash)
-
-                        
-
-                        em = discord.Embed(title=f"{currency_display_full} Sent", description=f"Address: `{address}`\nTransaction ID: [{tx_hash}]({explorer_url})", color=0x0000ff)
-
-                        await msg.reply(embed=em)
-
-                        await send_transcript(interaction.channel, seller_id, buyer_id, txid=tx_hash)
-
-                        deals = load_all_data()
-
-                        await asyncio.sleep(100)
-
-                        await interaction.channel.delete()
-
-                    except Exception as e:
-
-                        await msg.reply(f"Failed to send {currency_display}: `{str(e)}`")
-
-                    break
-
-                else:
-
-                    continue
+                    if await is_valid_address(address, currency):
+                        try:
+                            tx_hash = await send_funds_based_on_currency(deal, address)
+                            
+                            currency_display_full = {
+                                'ltc': 'Litecoin',
+                                'usdt_bep20': 'USDT (BEP20)',
+                                'usdt_polygon': 'USDT (Polygon)',
+                                'solana': 'Solana (SOL)',
+                                'ethereum': 'Ethereum (ETH)'
+                            }.get(currency, 'Crypto')
+                            
+                            explorer_url = get_explorer_url(currency, tx_hash)
+                            
+                            em = discord.Embed(title=f"{currency_display_full} Sent", description=f"Address: `{address}`\nTransaction ID: [{tx_hash}]({explorer_url})", color=0x0000ff)
+                            await msg.reply(embed=em)
+                            await send_transcript(interaction.channel, seller_id, buyer_id, txid=tx_hash)
+                            deals = load_all_data()
+                            
+                            await asyncio.sleep(100)
+                            await interaction.channel.delete()
+                        except Exception as e:
+                            await msg.reply(f"Failed to send {currency_display}: `{str(e)}`")
+                        break
+                    else:
+                        continue
+            finally:
+                deal['_processing_cancel'] = False
 
         else:
 
