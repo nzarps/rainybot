@@ -2563,26 +2563,58 @@ async def get_ltc_confirmations(tx_hash):
                 print(f"[LTC-CONF] Blockchair error: {e}")
             return None
 
-        async def check_sochain():
+        async def check_litecoinspace():
             try:
-                url = f"https://sochain.com/api/v3/transaction/LTC/{tx_hash}"
+                url = f"https://litecoinspace.org/api/tx/{tx_hash}/status"
+                async with session.get(url, timeout=5) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        # confirmed: boolean, block_height: int
+                        if data.get("confirmed"):
+                            # We need current height to calc confirmations.
+                            # chain_height = ... wait, status endpoint doesn't give current height?
+                            # Actually usually status gives 'block_height'.
+                            # We need to fetch tip? Or just assume if confirmed=true it's at least 1?
+                            # Better: use their tip endpoint or just use 'confirmations' field if present?
+                            # Mempool API 'status' object usually has 'block_height'.
+                            # To get exact confs we need tip. 
+                            # But wait, BlockCypher gives exact. 
+                            # Let's try to fetch tx wrapper which has 'status'.
+                            pass
+                        
+                # Alternative: Get full tx object
+                url_tx = f"https://litecoinspace.org/api/tx/{tx_hash}"
+                async with session.get(url_tx, timeout=5) as r:
+                     if r.status == 200:
+                        data = await r.json()
+                        status = data.get("status", {})
+                        if status.get("confirmed"):
+                             block_height = status.get("block_height")
+                             # We need chain tip to calculate confs: tip - height + 1
+                             # Let's fetch tip
+                             async with session.get("https://litecoinspace.org/api/blocks/tip/height", timeout=2) as r2:
+                                 if r2.status == 200:
+                                     tip = int(await r2.text())
+                                     return max(1, tip - block_height + 1)
+            except Exception as e:
+                print(f"[LTC-CONF] LitecoinSpace error: {e}")
+            return None
+
+        async def check_sochain_v2():
+            try:
+                url = f"https://chain.so/api/v2/get_tx/LTC/{tx_hash}"
                 async with session.get(url, timeout=5) as r:
                     if r.status == 200:
                         d = await r.json()
-                        if d.get("status") == "success": return int(d["data"]["confirmations"])
-                    else:
-                         # SoChain v3 is touchy, silence errors to reduce noise unless debugging
-                         pass
+                        if d.get("status") == "success":
+                            return int(d["data"]["confirmations"])
             except: pass
             return None
 
-        # Randomize Primary Fallbacks to distribute load (BlockCypher vs Blockchair)
-        apis = [check_blockcypher, check_blockchair]
+        # Randomize Primary Fallbacks
+        apis = [check_litecoinspace, check_blockcypher, check_blockchair, check_sochain_v2]
         import random
         random.shuffle(apis)
-        
-        # Append SoChain as last resort
-        apis.append(check_sochain)
 
         for api in apis:
             res = await api()
