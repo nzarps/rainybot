@@ -2529,52 +2529,65 @@ async def get_ltc_confirmations(tx_hash):
         # logging.error(f"[LTC-CONF] Local node failed: {e}") 
         pass
 
-    async with aiohttp.ClientSession() as session:
-        # 2. BLOCKCYPHER (Reliable generic API)
-        try:
-            url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
-            async with session.get(url, timeout=10) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    # BlockCypher returns 'confirmations' field directly
-                    if "confirmations" in data:
-                        return int(data["confirmations"])
-                else:
-                    # Specific error handling or backoff could go here
-                    pass
-        except Exception as e:
-            logging.error(f"[LTC-CONF] BlockCypher error: {e}")
+    async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
+        # Define API Callers
+        async def check_blockcypher():
+            try:
+                url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
+                async with session.get(url, timeout=5) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        if "confirmations" in data: return int(data["confirmations"])
+                    else:
+                        print(f"[LTC-CONF] BlockCypher failed: {r.status}")
+            except Exception as e:
+                print(f"[LTC-CONF] BlockCypher error: {e}")
+            return None
 
-        # 3. BLOCKCHAIR (Another reliable backup)
-        try:
-            url = f"https://api.blockchair.com/litecoin/dashboards/transaction/{tx_hash}"
-            async with session.get(url, timeout=10) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    # Structure: data -> [tx_hash] -> transaction -> block_id
-                    val = data.get("data", {}).get(tx_hash, {}).get("transaction")
-                    if val and "block_id" in val:
-                        block_height = val["block_id"]
-                        if block_height != -1:
-                            context = data.get("context", {})
-                            state_layer = context.get("state_layer") # Current max block
-                            if state_layer:
-                                return max(0, state_layer - block_height + 1)
-        except Exception as e:
-            logging.error(f"[LTC-CONF] Blockchair error: {e}")
+        async def check_blockchair():
+            try:
+                url = f"https://api.blockchair.com/litecoin/dashboards/transaction/{tx_hash}"
+                async with session.get(url, timeout=5) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        val = data.get("data", {}).get(tx_hash, {}).get("transaction")
+                        if val and "block_id" in val:
+                            block_height = val["block_id"]
+                            if block_height != -1:
+                                context = data.get("context", {})
+                                state_layer = context.get("state_layer")
+                                if state_layer: return max(0, state_layer - block_height + 1)
+                    else:
+                        print(f"[LTC-CONF] Blockchair failed: {r.status}")
+            except Exception as e:
+                print(f"[LTC-CONF] Blockchair error: {e}")
+            return None
 
-        # 4. SOCHAIN v3 (Preferred API - Fallback)
-        try:
-            url = f"https://sochain.com/api/v3/transaction/LTC/{tx_hash}"
-            async with session.get(url, timeout=5) as r:
-                if r.status == 200:
-                    d = await r.json()
-                    if d.get("status") == "success":
-                        return int(d["data"]["confirmations"])
-                else:
-                    logging.error(f"[LTC-CONF] SoChain v3 failed: {r.status}")
-        except Exception as e:
-            logging.error(f"[LTC-CONF] SoChain v3 error: {e}")
+        async def check_sochain():
+            try:
+                url = f"https://sochain.com/api/v3/transaction/LTC/{tx_hash}"
+                async with session.get(url, timeout=5) as r:
+                    if r.status == 200:
+                        d = await r.json()
+                        if d.get("status") == "success": return int(d["data"]["confirmations"])
+                    else:
+                         # SoChain v3 is touchy, silence errors to reduce noise unless debugging
+                         pass
+            except: pass
+            return None
+
+        # Randomize Primary Fallbacks to distribute load (BlockCypher vs Blockchair)
+        apis = [check_blockcypher, check_blockchair]
+        import random
+        random.shuffle(apis)
+        
+        # Append SoChain as last resort
+        apis.append(check_sochain)
+
+        for api in apis:
+            res = await api()
+            if res is not None:
+                return res
 
     return None
 
@@ -4783,7 +4796,7 @@ async def handle_full_payment(
                 import traceback
                 traceback.print_exc()
                 
-            await asyncio.sleep(6)
+            await asyncio.sleep(5)
 
         # FINAL STEP: SUCCESS TRANSITION
         if confs < 2:
