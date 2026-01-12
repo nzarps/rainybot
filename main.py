@@ -4724,7 +4724,6 @@ async def handle_full_payment(
                     # If None, strictly ignore (keep max_confs_seen as is)
                 elif currency in ["usdt_polygon", "usdt_bep20", "ethereum"]:
                     if current_txid:
-                    if current_txid:
                         tick_confs = await get_evm_confirmations(current_txid, currency)
                         max_confs_seen = max(max_confs_seen, tick_confs)
                     else:
@@ -4740,12 +4739,10 @@ async def handle_full_payment(
                                 check_bal = await get_usdt_balance_parallel(contract, address, rpcs, decs)
                             
                             if check_bal >= (float(expected_amount) - 0.0001):
-                            if check_bal >= (float(expected_amount) - 0.0001):
                                 print(f"[VERIFY] TXID indexing slow, but funds found via balance check. Proceeding.")
                                 tick_confs = 2
                                 max_confs_seen = 2
                         except: pass
-                elif currency == "solana":
                 elif currency == "solana":
                     if current_txid:
                         tick_confs = await get_solana_confirmations(current_txid)
