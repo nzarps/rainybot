@@ -2516,8 +2516,9 @@ async def get_ltc_confirmations(tx_hash):
     """
     Get exact confirmation count for an LTC transaction.
     Strategy: Local Node -> BlockCypher -> Blockchair -> SoChain v3
+    Returns: int (confirmations) or None (if all APIs fail)
     """
-    if not tx_hash: return 0
+    if not tx_hash: return None
     
     # 1. LOCAL NODE (Fastest & Most Reliable)
     try:
@@ -2571,10 +2572,11 @@ async def get_ltc_confirmations(tx_hash):
                     if d.get("status") == "success":
                         return int(d["data"]["confirmations"])
                 else:
-                    print("[LTC-CONF] BlockCypher Rate Limited")
-        except: pass
+                    logging.error(f"[LTC-CONF] SoChain v3 failed: {r.status}")
+        except Exception as e:
+            logging.error(f"[LTC-CONF] SoChain v3 error: {e}")
 
-    return 0
+    return None
 
 
 
@@ -4696,6 +4698,7 @@ async def handle_full_payment(
                 try: await msg.edit(embed=wait_embed)
                 except: pass
         
+        max_confs_seen = 0
         for i in range(300): # Max 10 mins (300 * 2s = 600s)
             try:
                 # 1. RETRY TXID if missing
@@ -4712,12 +4715,18 @@ async def handle_full_payment(
                     except: pass
 
                 # 3. CHECK CONFIRMATIONS
-                confs = 0
+                tick_confs = 0 # Confirmations seen in this tick
                 if currency == "ltc":
-                    confs = await get_ltc_confirmations(current_txid)
+                    res = await get_ltc_confirmations(current_txid)
+                    if res is not None:
+                        tick_confs = res
+                        max_confs_seen = max(max_confs_seen, tick_confs)
+                    # If None, strictly ignore (keep max_confs_seen as is)
                 elif currency in ["usdt_polygon", "usdt_bep20", "ethereum"]:
                     if current_txid:
-                        confs = await get_evm_confirmations(current_txid, currency)
+                    if current_txid:
+                        tick_confs = await get_evm_confirmations(current_txid, currency)
+                        max_confs_seen = max(max_confs_seen, tick_confs)
                     else:
                         # STALL FALLBACK: If TXID indexing is slow, check direct balance
                         try:
@@ -4731,21 +4740,30 @@ async def handle_full_payment(
                                 check_bal = await get_usdt_balance_parallel(contract, address, rpcs, decs)
                             
                             if check_bal >= (float(expected_amount) - 0.0001):
+                            if check_bal >= (float(expected_amount) - 0.0001):
                                 print(f"[VERIFY] TXID indexing slow, but funds found via balance check. Proceeding.")
-                                confs = 2
+                                tick_confs = 2
+                                max_confs_seen = 2
                         except: pass
                 elif currency == "solana":
+                elif currency == "solana":
                     if current_txid:
-                        confs = await get_solana_confirmations(current_txid)
+                        tick_confs = await get_solana_confirmations(current_txid)
+                        max_confs_seen = max(max_confs_seen, tick_confs)
                     else:
                         # Solana fallback
                         try:
                             check_bal = await get_solana_balance_parallel(address)
                             if check_bal >= (float(expected_amount) - 0.0001):
-                                confs = 2
+                                tick_confs = 2
+                                max_confs_seen = 2
                         except: pass
                 else:
-                    confs = 2 # Catch-all
+                    tick_confs = 2 # Catch-all
+                    max_confs_seen = 2
+
+                # Sync confs for UI
+                confs = max_confs_seen
 
                 # 4. UPDATE UI
                 status_icon = "⏳" if confs < 2 else "✅"
@@ -7778,79 +7796,25 @@ class PartialPaymentView(View):
         if self.deal.get('mod_locked'):
             return await interaction.response.send_message("⚠️ This deal has been locked by a moderator. Please contact support for assistance.", ephemeral=True)
 
-        # User wants to proceed with partial payment as-is
+        # User wants to pay the rest
         await interaction.response.defer()
         
-        # Disable buttons
-        for child in self.children:
-            child.disabled = True
-        await interaction.message.edit(view=self)
-        
+        # Update the UI to show we are waiting for the rest
+        embed = interaction.message.embeds[0]
+        embed.title = "✅ Partial Payment Accepted - Waiting for Remainder"
         currency_display = self.currency.upper().replace("_", " ")
-        received_amount = self.deal.get('ltc_amount', 0)
-        
-        embed = discord.Embed(
-            title="✅ Partial Payment Accepted",
-            description=f"Proceeding with received amount: `{received_amount}` {currency_display}",
-            color=0x00ff00
+        embed.description = (
+            f"Please send the remaining **{self.remaining_amount:.6f} {currency_display}** to the same address.\n\n"
+            f"Address: `{self.deal.get('wallet_address')}`"
         )
-        await interaction.channel.send(embed=embed)
+        embed.color = 0x00ff00 # Green to show acceptance
+        embed.set_footer(text="Bot is listening for additional transactions...")
         
-        # Show STANDARD Release View (Release, Cancel, More Info, Contact Mod)
-        seller_id = int(self.deal.get('seller', 0))
-        buyer_id = int(self.deal.get('buyer', 0))
+        # Remove buttons
+        await interaction.message.edit(embed=embed, view=None)
         
-        # Update deal status to escrowed (as if full payment was received)
-        data = load_all_data()
-        if self.deal_id in data:
-            data[self.deal_id]['status'] = 'escrowed'
-            data[self.deal_id]['paid'] = True
-            save_all_data(data)
-        
-        # Send the standard ReleaseButton view with theHandshake Banner logic
-        from services.image_service import generate_handshake_image
-        
-        final_embed = discord.Embed(
-            title="Deal Confirmed ✅",
-            description=(
-                "**The funds have been successfully secured in our escrow wallet.**\n"
-                "The transaction has been verified on the blockchain.\n\n"
-                f"**Seller (<@{seller_id}>):**\n"
-                "You may now proceed with the delivery of the item/service.\n\n"
-                f"**Buyer (<@{buyer_id}>):**\n"
-                "Do **NOT** release funds until you have fully received and verified the item."
-            ),
-            color=0x00ff00
-        )
-        final_embed.set_author(name="Transaction Verified", icon_url=VERIFIED_ICON_URL)
-        final_embed.set_footer(text="⚠️ WARNING: Do NOT release funds until you have received and verified the item.")
-
-        # Attach banner
-        file_attachment = None
-        try:
-            buyer_user = bot.get_user(int(buyer_id)) or await bot.fetch_user(int(buyer_id))
-            seller_user = bot.get_user(int(seller_id)) or await bot.fetch_user(int(seller_id))
-            # URL or default
-            buyer_pfp = "https://cdn.discordapp.com/embed/avatars/0.png"
-            seller_pfp = "https://cdn.discordapp.com/embed/avatars/0.png"
-            
-            if buyer_user:
-                buyer_pfp = str(buyer_user.display_avatar.url)
-            if seller_user:
-                seller_pfp = str(seller_user.display_avatar.url)
-            
-            banner_bytes = await generate_handshake_image(buyer_pfp, seller_pfp)
-            file_attachment = discord.File(banner_bytes, filename="secure_deal.png")
-            final_embed.set_image(url="attachment://secure_deal.png")
-        except:
-            pass
-
-        v_final = ReleaseButton(txid=self.deal.get('txid'), currency=self.currency)
-        
-        send_kwargs = {"embed": final_embed, "view": v_final}
-        if file_attachment: send_kwargs["file"] = file_attachment
-        
-        await interaction.channel.send(**send_kwargs)
+        # We do NOT mark as paid. The monitor_wallet loop is still running 
+        # and will pick up the new total once sent.
 
     @discord.ui.button(label="Cancel with Refund", style=discord.ButtonStyle.red, custom_id="partial_cancel")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
