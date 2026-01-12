@@ -2515,7 +2515,7 @@ async def api_get_status(address: str):
 async def get_ltc_confirmations(tx_hash):
     """
     Get exact confirmation count for an LTC transaction.
-    Strategy: Local Node -> SoChain v3 -> SoChain v2 -> BlockCypher
+    Strategy: Local Node -> BlockCypher -> Blockchair -> SoChain v3
     """
     if not tx_hash: return 0
     
@@ -2525,11 +2525,44 @@ async def get_ltc_confirmations(tx_hash):
         if tx_data:
             return int(tx_data.get("confirmations", 0))
     except Exception as e:
-        # print(f"[LTC-CONF] Local node failed: {e}") 
+        # logging.error(f"[LTC-CONF] Local node failed: {e}") 
         pass
 
     async with aiohttp.ClientSession() as session:
-        # 2. SOCHAIN v3 (Preferred API)
+        # 2. BLOCKCYPHER (Reliable generic API)
+        try:
+            url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
+            async with session.get(url, timeout=10) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    # BlockCypher returns 'confirmations' field directly
+                    if "confirmations" in data:
+                        return int(data["confirmations"])
+                else:
+                    # Specific error handling or backoff could go here
+                    pass
+        except Exception as e:
+            logging.error(f"[LTC-CONF] BlockCypher error: {e}")
+
+        # 3. BLOCKCHAIR (Another reliable backup)
+        try:
+            url = f"https://api.blockchair.com/litecoin/dashboards/transaction/{tx_hash}"
+            async with session.get(url, timeout=10) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    # Structure: data -> [tx_hash] -> transaction -> block_id
+                    val = data.get("data", {}).get(tx_hash, {}).get("transaction")
+                    if val and "block_id" in val:
+                        block_height = val["block_id"]
+                        if block_height != -1:
+                            context = data.get("context", {})
+                            state_layer = context.get("state_layer") # Current max block
+                            if state_layer:
+                                return max(0, state_layer - block_height + 1)
+        except Exception as e:
+            logging.error(f"[LTC-CONF] Blockchair error: {e}")
+
+        # 4. SOCHAIN v3 (Preferred API - Fallback)
         try:
             url = f"https://sochain.com/api/v3/transaction/LTC/{tx_hash}"
             async with session.get(url, timeout=5) as r:
@@ -2538,27 +2571,6 @@ async def get_ltc_confirmations(tx_hash):
                     if d.get("status") == "success":
                         return int(d["data"]["confirmations"])
                 else:
-                    print(f"[LTC-CONF] SoChain v3 failed: {r.status}")
-        except Exception as e:
-            print(f"[LTC-CONF] SoChain v3 error: {e}")
-
-        # 3. SOCHAIN v2 (Fallback)
-        try:
-            url = f"https://sochain.com/api/v2/get_tx/LTC/{tx_hash}"
-            async with session.get(url, timeout=5) as r:
-                if r.status == 200:
-                    d = await r.json()
-                    return int(d["data"]["confirmations"])
-        except: pass
-
-        # 4. BLOCKCYPHER (Strict Rate Limits)
-        try:
-            url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
-            async with session.get(url, timeout=5) as r:
-                if r.status == 200:
-                    d = await r.json()
-                    return int(d.get("confirmations", 0))
-                elif r.status == 429:
                     print("[LTC-CONF] BlockCypher Rate Limited")
         except: pass
 
