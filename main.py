@@ -11570,10 +11570,10 @@ async def on_member_join(member):
         channel = bot.get_channel(CHANNEL_ID)
 
         if channel:
-
-            await channel.purge()
-
-            await channel.send(embed=embed, view=TicketView())
+            # Disabled auto-purge/resend to prevent deleting the existing Ticket Panel
+            # await channel.purge()
+            # await channel.send(embed=embed, view=TicketView())
+            pass
 
     except Exception as e:
 
