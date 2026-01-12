@@ -2515,39 +2515,51 @@ async def api_get_status(address: str):
 async def get_ltc_confirmations(tx_hash):
     """
     Get exact confirmation count for an LTC transaction.
-    Strategy: Local Node -> LitecoinSpace -> BlockCypher -> SoChain
+    Strategy: Local Node -> SoChain v3 -> SoChain v2 -> BlockCypher
     """
     if not tx_hash: return 0
     
     # 1. LOCAL NODE (Fastest & Most Reliable)
     try:
-        # We try getrawtransaction with verbose=1
         tx_data = await rpc_async("getrawtransaction", tx_hash, 1)
         if tx_data:
             return int(tx_data.get("confirmations", 0))
-    except:
+    except Exception as e:
+        # print(f"[LTC-CONF] Local node failed: {e}") 
         pass
 
     async with aiohttp.ClientSession() as session:
-        # 2. LITECOINSPACE (Removed: API doesn't provide easy conf count without tip height, falling back to BlockCypher/SoChain)
-        pass
-
-        # 3. BLOCKCYPHER
+        # 2. SOCHAIN v3 (Preferred API)
         try:
-            url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
-            async with session.get(url, timeout=2) as r:
+            url = f"https://sochain.com/api/v3/transaction/LTC/{tx_hash}"
+            async with session.get(url, timeout=5) as r:
                 if r.status == 200:
                     d = await r.json()
-                    return int(d.get("confirmations", 0))
-        except: pass
+                    if d.get("status") == "success":
+                        return int(d["data"]["confirmations"])
+                else:
+                    print(f"[LTC-CONF] SoChain v3 failed: {r.status}")
+        except Exception as e:
+            print(f"[LTC-CONF] SoChain v3 error: {e}")
 
-        # 4. SOCHAIN
+        # 3. SOCHAIN v2 (Fallback)
         try:
             url = f"https://sochain.com/api/v2/get_tx/LTC/{tx_hash}"
-            async with session.get(url, timeout=2) as r:
+            async with session.get(url, timeout=5) as r:
                 if r.status == 200:
                     d = await r.json()
                     return int(d["data"]["confirmations"])
+        except: pass
+
+        # 4. BLOCKCYPHER (Strict Rate Limits)
+        try:
+            url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
+            async with session.get(url, timeout=5) as r:
+                if r.status == 200:
+                    d = await r.json()
+                    return int(d.get("confirmations", 0))
+                elif r.status == 429:
+                    print("[LTC-CONF] BlockCypher Rate Limited")
         except: pass
 
     return 0
@@ -4325,8 +4337,9 @@ async def handle_partial_payment_fast(channel, deal_info, received, expected, cu
 
 
         if msg:
-            try: await msg.delete()
-            except: pass
+            # try: await msg.delete()
+            # except: pass
+            pass
 
 
 
@@ -4493,8 +4506,9 @@ async def handle_partial_payment_fast(channel, deal_info, received, expected, cu
     # Clean old msg
 
     if msg:
-        try: await msg.delete()
-        except: pass
+        # try: await msg.delete()
+        # except: pass
+        pass
 
 
 
@@ -4732,15 +4746,28 @@ async def handle_full_payment(
                             await asyncio.sleep(1.5) # Allow user to see "2/2" before transition
                     except: pass
 
+                print(f"[VERIFY_LOOP] Confs for {currency}: {confs} (TXID: {current_txid})")
+                
                 if confs >= 2:
                     break
                     
             except Exception as e:
                 print(f"[VERIFY_LOOP] Error: {e}")
+                import traceback
+                traceback.print_exc()
                 
-            await asyncio.sleep(2)
+            await asyncio.sleep(6)
 
         # FINAL STEP: SUCCESS TRANSITION
+        if confs < 2:
+            logger.warning(f"[VERIFY] Timed out waiting for confirmations for {deal_id}. Aborting.")
+            try:
+                wait_embed.description = f"⚠️ Verification timed out. We detected {received_amount} {currency} but could not confirm it on-chain within 10 minutes.\n**Please contact support.**"
+                wait_embed.color = 0xff0000
+                wait_embed.set_field_at(2, name="🔄 Confirmations", value="❌ Timed Out", inline=False)
+                await msg.edit(embed=wait_embed, view=None)
+            except: pass
+            return
         
         final_embed = discord.Embed(
             title="Deal Confirmed ✅",
