@@ -4712,7 +4712,7 @@ async def handle_full_payment(
                 except: pass
         
         max_confs_seen = 0
-        for i in range(300): # Max 10 mins (300 * 2s = 600s)
+        for i in range(720): # Max 60 mins (720 * 5s = 3600s)
             try:
                 # 1. RETRY TXID if missing
                 if not current_txid:
