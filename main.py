@@ -4734,14 +4734,27 @@ async def handle_full_payment(
 
         # PREPARE PREMIUM WAIT EMBED
         v_wait = discord.ui.View(timeout=None)
-        explorer_url = None
         button_added = False
         
-        if tx_hash:
-            explorer_url = get_explorer_url(currency, tx_hash)
-            if explorer_url:
-                v_wait.add_item(discord.ui.Button(label="View on Blockchain", url=explorer_url))
-                button_added = True
+        # Multiple Buttons for Multi-Payment Support
+        seen_txids = deal_info.get("_seen_txids", [])
+        
+        # If no seen_txids but we have tx_hash, use that (Legacy/Single)
+        if not seen_txids and tx_hash:
+            seen_txids = [tx_hash]
+            
+        # Ensure current recent one is included if not in seen (Edge Case)
+        if tx_hash and tx_hash not in seen_txids:
+            seen_txids.append(tx_hash)
+
+        if seen_txids:
+            for idx, tx in enumerate(seen_txids):
+                url = get_explorer_url(currency, tx)
+                if url:
+                    # If only 1, use generic label. If multiple, use numbered label.
+                    label = "View on Blockchain" if len(seen_txids) == 1 else f"View Payment {idx+1}"
+                    v_wait.add_item(discord.ui.Button(label=label, url=url))
+                    button_added = True
 
         if msg:
             wait_embed = msg.embeds[0]
@@ -7906,12 +7919,29 @@ class PartialPaymentView(View):
         embed.set_footer(text="Bot is listening for additional transactions...")
         
         # Remove buttons or Add Link
-        view = None
-        if self.txid:
-            url = get_explorer_url(self.currency, self.txid)
-            if url:
-                view = discord.ui.View()
-                view.add_item(discord.ui.Button(label="View on Blockchain", url=url))
+        # Remove buttons or Add Link
+        view = discord.ui.View()
+        added_btn = False
+
+        # Multi-TX Support
+        seen_txids = self.deal.get("_seen_txids", [])
+        if not seen_txids and self.txid:
+            seen_txids = [self.txid]
+        
+        # Ensure current one is included
+        if self.txid and self.txid not in seen_txids:
+            seen_txids.append(self.txid)
+
+        if seen_txids:
+            for idx, tx in enumerate(seen_txids):
+                url = get_explorer_url(self.currency, tx)
+                if url:
+                    label = "View on Blockchain" if len(seen_txids) == 1 else f"View Payment {idx+1}"
+                    view.add_item(discord.ui.Button(label=label, url=url))
+                    added_btn = True
+        
+        if not added_btn:
+            view = None
 
         await interaction.message.edit(embed=embed, view=view)
         
