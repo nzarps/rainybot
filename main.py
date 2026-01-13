@@ -3107,9 +3107,9 @@ async def get_ltc_txid_async(address: str):
             async with session.get(url, proxy=proxy_url, timeout=1.5) as r:
                 if r.status == 200:
                     txs = await r.json()
-                    if txs: return txs[0]["txid"]
+                    if txs: return [t["txid"] for t in txs]
         except: pass
-        return None
+        return []
 
     async def fetch_confirmed():
         url = f"https://litecoinspace.org/api/address/{address}/txs"
@@ -3117,9 +3117,9 @@ async def get_ltc_txid_async(address: str):
             async with session.get(url, proxy=proxy_url, timeout=1.5) as r:
                 if r.status == 200:
                     txs = await r.json()
-                    if txs: return txs[0]["txid"]
+                    if txs: return [t["txid"] for t in txs]
         except: pass
-        return None
+        return []
 
     async def fetch_blockcypher():
         url = f"https://api.blockcypher.com/v1/ltc/main/addrs/{address}?token={BLOCKCYPHER_KEY}"
@@ -3127,19 +3127,19 @@ async def get_ltc_txid_async(address: str):
             async with session.get(url, timeout=1.5) as r:
                 if r.status == 200:
                     d = await r.json()
-                    all_txs = (d.get("txrefs") or []) + (d.get("unconfirmed_txrefs") or [])
-                    if all_txs: return all_txs[0]["tx_hash"]
+                    all_txs = (d.get("unconfirmed_txrefs") or []) + (d.get("txrefs") or []) # Prefer unconfirmed first
+                    if all_txs: return [t["tx_hash"] for t in all_txs]
         except: pass
-        return None
+        return []
 
     async def fetch_sochain():
         url = f"https://sochain.com/api/v2/address/LTC/{address}"
         try:
             async with session.get(url, timeout=1.5) as r:
                 d = await r.json()
-                if d.get("data") and d["data"].get("txs"): return d["data"]["txs"][0]["txid"]
+                if d.get("data") and d["data"].get("txs"): return [t["txid"] for t in d["data"]["txs"]]
         except: pass
-        return None
+        return []
 
     tasks = [
         asyncio.create_task(fetch_mempool()),
@@ -3151,7 +3151,7 @@ async def get_ltc_txid_async(address: str):
         res = await task
         if res:
             for t in tasks: t.cancel()
-            return res
+            return res # Returns list
     return None
 
 
@@ -3449,7 +3449,7 @@ async def fetch_txid_ultimate(address, currency, max_attempts=8):
         # ---------------------------
 
         elif currency == "ltc":
-
+            # RETURNS LIST
             return await get_ltc_txid_async(address)
 
             # s = await api_get_status(address)
@@ -3732,6 +3732,11 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
         data = load_all_data()
         if deal_id in data:
             deal_info = data[deal_id]
+            # Ensure we persist expectations
+            if "expected_crypto_amount" not in deal_info:
+                deal_info["expected_crypto_amount"] = float(expected_amount)
+                data[deal_id]["expected_crypto_amount"] = float(expected_amount)
+                save_all_data(data)
     except: pass
 
     # MONITOR GUARD
@@ -4120,7 +4125,26 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                         await msg.edit(embed=detect_embed)
                         
                         # 2. Now try to fetch TXID and update with button if found
-                        temp_txid = await fetch_txid_ultimate(address, currency)
+                        seen_txids = deal_info.get("_seen_txids", [])
+                        temp_txids_list = await fetch_txid_ultimate(address, currency)
+                        
+                        temp_txid = None
+                        if temp_txids_list:
+                            if isinstance(temp_txids_list, list):
+                                # Pick first one not in seen_txids? OR just the first one if it's the first payment.
+                                # For first payment, just pick [0]
+                                temp_txid = temp_txids_list[0]
+                                # Add to seen
+                                if temp_txid not in seen_txids:
+                                    seen_txids.append(temp_txid)
+                                    deal_info["_seen_txids"] = seen_txids
+                                    # Update DB (since we need to remember this for next payment)
+                                    data = load_all_data()
+                                    data[deal_id]["_seen_txids"] = seen_txids
+                                    save_all_data(data)
+                            else:
+                                temp_txid = temp_txids_list # Legacy/String
+
                         if temp_txid:
                             payment_txid = temp_txid
                             temp_url = get_explorer_url(currency, temp_txid)
@@ -4206,7 +4230,28 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
 
                     # EXACT FULL PAYMENT - IMMEDIATE PREMIUM UI
                     logger.debug(f"[MONITOR] Full payment detected for {deal_id[:8]}. Proceeding to verification.")
-                    txid = await fetch_txid_ultimate(address, currency)
+                    
+                    # FETCH TXID
+                    # Expecting LIST for LTC, String for others? 
+                    # fetch_txid_ultimate now returns list for LTC.
+                    
+                    raw_tx_res = await fetch_txid_ultimate(address, currency)
+                    txid = None
+                    
+                    if raw_tx_res:
+                        if isinstance(raw_tx_res, list):
+                            # Find the NEW one
+                            known = deal_info.get("_seen_txids", [])
+                            # Candidates are those in raw_tx_res NOT in known
+                            candidates = [t for t in raw_tx_res if t not in known]
+                            if candidates:
+                                txid = candidates[0] # Prefer new
+                            else:
+                                txid = raw_tx_res[0] # Fallback to latest
+                        else:
+                            txid = raw_tx_res
+
+                    # Update USD Value
                     
                     # Compute USD Value
                     usd_val = 0.0
@@ -4335,7 +4380,9 @@ async def handle_partial_payment_fast(channel, deal_info, received, expected, cu
 
     if not tx_hash:
         try:
-            tx_hash = await fetch_txid_ultimate(address, currency, max_attempts=12)
+                # Legacy flow
+            tx_res = await fetch_txid_ultimate(address, currency, max_attempts=12)
+            tx_hash = tx_res[0] if isinstance(tx_res, list) and tx_res else tx_res
         except Exception as e:
             logger.error(f"[CheckPayment] TXID fetch failed: {e}")
             tx_hash = None
@@ -4751,7 +4798,9 @@ async def handle_full_payment(
             try:
                 # 1. RETRY TXID if missing
                 if not current_txid:
-                    current_txid = await fetch_txid_ultimate(address, currency, max_attempts=1)
+                    res_tx = await fetch_txid_ultimate(address, currency, max_attempts=1)
+                    if res_tx:
+                        current_txid = res_tx[0] if isinstance(res_tx, list) else res_tx
                     if current_txid:
                         explorer_url = get_explorer_url(currency, current_txid)
                 
@@ -7075,7 +7124,7 @@ class AddyButtons(View):
         seller_id = deal.get('seller', 'None')
         buyer_id = deal.get('buyer', 'None')
         addy = deal.get('address')
-        amount = deal.get('ltc_amount', 0)
+        amount = deal.get('expected_crypto_amount', deal.get('ltc_amount', 0))
         
         # Authorization check
         try:
@@ -7113,7 +7162,7 @@ class AddyButtons(View):
         seller_id = deal.get('seller', 'None')
         buyer_id = deal.get('buyer', 'None')
         addy = deal.get('address')
-        amount = deal.get('ltc_amount', 0)
+        amount = deal.get('expected_crypto_amount', deal.get('ltc_amount', 0))
         currency_tag = deal.get('currency', 'ltc')
 
         # Authorization check
