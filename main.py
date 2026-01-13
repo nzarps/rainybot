@@ -7928,9 +7928,9 @@ class PartialPaymentView(View):
         
     @discord.ui.button(label="Continue", style=discord.ButtonStyle.green, custom_id="partial_continue")
     async def continue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Restriction: Only Buyer (Sender) can continue
-        buyer_id = int(self.deal.get('buyer', 0))
-        if interaction.user.id != buyer_id:
+        # Restriction: Only Sender (Buyer) can continue
+        sender_id = int(self.deal.get('seller', 0))
+        if interaction.user.id != sender_id:
             return await interaction.response.send_message("Only the sender (Buyer) can choose to continue.", ephemeral=True)
 
         if self.deal.get('mod_locked'):
@@ -7972,8 +7972,9 @@ class PartialPaymentView(View):
     @discord.ui.button(label="Cancel with Refund", style=discord.ButtonStyle.red, custom_id="partial_cancel")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Restriction: Only Buyer (Sender) can cancel
-        buyer_id = int(self.deal.get('buyer', 0))
-        if interaction.user.id != buyer_id:
+        # Restriction: Only Sender (Buyer) can cancel
+        sender_id = int(self.deal.get('seller', 0))
+        if interaction.user.id != sender_id:
             return await interaction.response.send_message("Only the sender (Buyer) can cancel and refund.", ephemeral=True)
             
         # User wants to cancel and refund
@@ -7994,9 +7995,9 @@ class OverpaymentView(View):
         
     @discord.ui.button(label="Accept Excess Amount", style=discord.ButtonStyle.green, custom_id="overpay_accept")
     async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Restriction: Only Buyer (Sender) can accept
-        buyer_id = int(self.deal_info.get('buyer', 0))
-        if interaction.user.id != buyer_id:
+        # Restriction: Only Sender (Buyer) can accept
+        sender_id = int(self.deal_info.get('seller', 0))
+        if interaction.user.id != sender_id:
             return await interaction.response.send_message("Only the sender (Buyer) can decide to accept/cancel overpayment.", ephemeral=True)
 
         await interaction.response.defer()
