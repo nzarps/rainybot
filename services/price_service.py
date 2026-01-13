@@ -240,7 +240,7 @@ async def usd_to_currency_amount(amount_usd, currency):
     rate = await get_cached_price(currency, "usd")
     if rate == "RATE_LIMIT": return "RATE_LIMIT"
     if rate and rate > 0:
-        result = amount_usd / rate
+        result = float(amount_usd) / rate
         return round(result, 8)
     return 0.0
 
@@ -249,7 +249,7 @@ async def currency_to_fiat(amount, currency, vs_currency="usd"):
     rate = await get_cached_price(currency, vs_currency)
     if rate == "RATE_LIMIT": return "RATE_LIMIT"
     if rate and rate > 0:
-        result = amount * rate
+        result = float(amount) * rate
         return round(result, 2)
     return 0.0
 

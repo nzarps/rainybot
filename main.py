@@ -4147,6 +4147,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                 tolerance = float(expected_amount) * 0.0001
                 
                 if difference > tolerance:
+                    print(f"[DEBUG-PARTIAL] Total: {total} | Expected: {expected_amount} | Diff: {difference} | LastNotify: {deal_info.get('last_partial_notification_amount')}")
                     # PARTIAL
                     # JIT check: Don't send partial if deal is already verified/processed
                     d_tup = get_deal_by_channel(channel.id)
@@ -4159,7 +4160,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
 
                     # Check if already notified for this amount
                     last_notified = deal_info.get("last_partial_notification_amount", -1)
-                    if float(total) == float(last_notified):
+                    if abs(float(total) - float(last_notified)) < 1e-9:
                          # Already notified for this partial amount, skip embed
                         await asyncio.sleep(1)
                         continue
