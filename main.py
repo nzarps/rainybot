@@ -4192,8 +4192,6 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     last_notified = deal_info.get("last_partial_notification_amount", -1)
                     if abs(float(total) - float(last_notified)) < 1e-9:
                          # Already notified for this partial amount, skip embed
-                    if abs(float(total) - float(last_notified)) < 1e-9:
-                         # Already notified for this partial amount, skip embed
                         await asyncio.sleep(1)
                         continue
 
