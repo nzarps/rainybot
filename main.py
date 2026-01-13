@@ -4078,6 +4078,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
         if total > 0:
             # If new funds came in since last check
             if total > last_balance:
+                payment_txid = None
                 last_balance = total
                 logger.debug(f"[DEBUG] New balance detected: {total}")
                 
@@ -4121,6 +4122,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                         # 2. Now try to fetch TXID and update with button if found
                         temp_txid = await fetch_txid_ultimate(address, currency)
                         if temp_txid:
+                            payment_txid = temp_txid
                             temp_url = get_explorer_url(currency, temp_txid)
                             if temp_url:
                                 d_view = discord.ui.View()
@@ -4178,7 +4180,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                         color=0xffaa00
                     )
                     
-                    view = PartialPaymentView(deal_id, deal_info, remaining, currency)
+                    view = PartialPaymentView(deal_id, deal_info, remaining, currency, txid=payment_txid)
                     await channel.send(embed=embed, view=view)
 
                     # Update notification state
@@ -7822,12 +7824,13 @@ class ReleaseButton(View):
 
 
 class PartialPaymentView(View):
-    def __init__(self, deal_id, deal, remaining_amount, currency):
+    def __init__(self, deal_id, deal, remaining_amount, currency, txid=None):
         super().__init__(timeout=None)
         self.deal_id = deal_id
         self.deal = deal
         self.remaining_amount = remaining_amount
         self.currency = currency
+        self.txid = txid
         
     @discord.ui.button(label="Continue", style=discord.ButtonStyle.green, custom_id="partial_continue")
     async def continue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -7848,13 +7851,20 @@ class PartialPaymentView(View):
         currency_display = self.currency.upper().replace("_", " ")
         embed.description = (
             f"Please send the remaining **{self.remaining_amount:.6f} {currency_display}** to the same address.\n\n"
-            f"Address: `{self.deal.get('wallet_address')}`"
+            f"Address: `{self.deal.get('address', 'Unknown')}`"
         )
         embed.color = 0x00ff00 # Green to show acceptance
         embed.set_footer(text="Bot is listening for additional transactions...")
         
-        # Remove buttons
-        await interaction.message.edit(embed=embed, view=None)
+        # Remove buttons or Add Link
+        view = None
+        if self.txid:
+            url = get_explorer_url(self.currency, self.txid)
+            if url:
+                view = discord.ui.View()
+                view.add_item(discord.ui.Button(label="View on Blockchain", url=url))
+
+        await interaction.message.edit(embed=embed, view=view)
         
         # We do NOT mark as paid. The monitor_wallet loop is still running 
         # and will pick up the new total once sent.
