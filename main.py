@@ -7937,50 +7937,39 @@ class PartialPaymentView(View):
 
         if self.deal.get('mod_locked'):
             return await interaction.response.send_message("⚠️ This deal has been locked by a moderator. Please contact support for assistance.", ephemeral=True)
-
-        # User wants to pay the rest
+            
         await interaction.response.defer()
+
+        # ACCEPT PARTIAL AS FULL
+        # We process the current 'ltc_amount' (total paid) as the final accepted amount.
         
-        # Update the UI to show we are waiting for the rest
-        embed = interaction.message.embeds[0]
-        embed.title = "✅ Partial Payment Accepted - Waiting for Remainder"
-        currency_display = self.currency.upper().replace("_", " ")
-        embed.description = (
-            f"Please send the remaining **{self.remaining_amount:.6f} {currency_display}** to the same address.\n\n"
-            f"Address: `{self.deal.get('address', 'Unknown')}`"
+        # 1. Update Expected Amount to match Paid (so it doesn't look like underpayment anymore)
+        current_paid = self.deal.get('ltc_amount', 0)
+        self.deal['expected_crypto_amount'] = float(current_paid)
+        
+        # Save updated expectation
+        try:
+             d = load_all_data()
+             if self.deal_id in d:
+                 d[self.deal_id]['expected_crypto_amount'] = float(current_paid)
+                 save_all_data(d)
+        except: pass
+
+        # 2. Trigger Full Payment Flow
+        # This will show 'Verifying Transaction' -> 'Release Panel'
+        await handle_full_payment(
+            interaction.channel, 
+            self.deal, 
+            current_paid, 
+            current_paid, # Expected = Paid
+            self.currency, 
+            self.deal.get('address'), 
+            msg=interaction.message, 
+            tx_hash=self.txid
         )
-        embed.color = 0x00ff00 # Green to show acceptance
-        embed.set_footer(text="Bot is listening for additional transactions...")
         
-        # Remove buttons or Add Link
-        # Remove buttons or Add Link
-        view = discord.ui.View()
-        added_btn = False
-
-        # Multi-TX Support
-        seen_txids = self.deal.get("_seen_txids", [])
-        if not seen_txids and self.txid:
-            seen_txids = [self.txid]
-        
-        # Ensure current one is included
-        if self.txid and self.txid not in seen_txids:
-            seen_txids.append(self.txid)
-
-        if seen_txids:
-            for idx, tx in enumerate(seen_txids):
-                url = get_explorer_url(self.currency, tx)
-                if url:
-                    label = "View on Blockchain" if len(seen_txids) == 1 else f"View Payment {idx+1}"
-                    view.add_item(discord.ui.Button(label=label, url=url))
-                    added_btn = True
-        
-        if not added_btn:
-            view = None
-
-        await interaction.message.edit(embed=embed, view=view)
-        
-        # We do NOT mark as paid. The monitor_wallet loop is still running 
-        # and will pick up the new total once sent.
+        # Note: handle_full_payment sets 'paid=True' and stops monitor_wallet.
+        return
 
     @discord.ui.button(label="Cancel with Refund", style=discord.ButtonStyle.red, custom_id="partial_cancel")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
