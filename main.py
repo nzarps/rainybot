@@ -4172,11 +4172,25 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                 
                 # Calculate difference
                 # Calculate difference
+                # Calculate difference
                 difference = float(expected_amount) - total
-                # FIX: Use fixed clean tolerance matching line 4221 (0.0001) instead of percentage
                 tolerance = 0.0001
-                
-                if difference > tolerance:
+
+                # MARGIN CHECK: Calculate USD value of difference
+                # If difference is <= $0.08, we treat it as Full Payment
+                try:
+                    # We accept slightly negative difference (overpayment) or small positive (underpayment)
+                    if difference > 0:
+                        diff_usd = await currency_to_usd(difference, currency)
+                    else:
+                        diff_usd = 0.0
+                except:
+                    diff_usd = 100.0 # Fail safe: enforce strict checking if price fail
+
+                # PARTIAL CONDITION:
+                # 1. Underpaid more than crypto tolerance (dust)
+                # 2. AND underpaid more than $0.08 USD margin
+                if difference > tolerance and diff_usd > 0.08:
                     print(f"[DEBUG-PARTIAL] Total: {total} | Expected: {expected_amount} | Diff: {difference} | LastNotify: {deal_info.get('last_partial_notification_amount')}")
                     # PARTIAL
                     # JIT check: Don't send partial if deal is already verified/processed
@@ -4235,7 +4249,9 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     
 
 
-                elif total >= (float(expected_amount) - 0.0001):
+                # FULL PAYMENT CONDITION (Implicitly reached if not Partial)
+                # We accept if within tolerance OR within USD margin
+                elif total > 0 and (difference <= tolerance or diff_usd <= 0.08):
                     # JUST-IN-TIME CHECK: Final check of DB before sending message
                     updated_deal_tuple = get_deal_by_channel(channel.id)
                     if updated_deal_tuple:
