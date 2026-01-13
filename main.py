@@ -4153,7 +4153,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     d_tup = get_deal_by_channel(channel.id)
                     if d_tup:
                         _, cd = d_tup
-                        if cd.get('paid') or cd.get('status') != 'active':
+                        if cd.get('paid') or cd.get('status') in ['completed', 'cancelled', 'escrowed']:
                              logger.debug(f"[MONITOR] Skipping partial notify for {deal_id[:8]} - state is {cd.get('status')}")
                              bot.active_monitors.discard(lock_key)
                              return
