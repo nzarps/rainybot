@@ -1084,13 +1084,13 @@ def _send_ltc_sync(sendaddy, private_key, to_address, amount):
 
 
     if amount is None or amount > total_balance:
-
         amount = total_balance
 
-
+    # FIX: Quantize to 8 decimals to prevent "Invalid amount" RPC error
+    # Convert to string first to ensure clean truncation/rounding
+    amount = float(f"{amount:.8f}")
 
     inputs = [{"txid": u["txid"], "vout": u["vout"]} for u in utxos]
-
     outputs = {to_address: amount}
 
 
