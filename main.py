@@ -3999,7 +3999,9 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
             if currency == "ltc":
                 s = await api_get_status(address)
                 total = float(s["confirmed"] + s["unconfirmed"])
-                is_confirmed = float(s["confirmed"]) >= expected_amount
+                total = float(s["confirmed"] + s["unconfirmed"])
+                # FIX: Add tolerance for LTC too
+                is_confirmed = total >= (expected_amount - 0.0001)
             elif currency == "usdt_bep20":
                 total = await get_usdt_balance_parallel(USDT_BEP20_CONTRACT, address, BEP20_RPC_URLS, USDT_BEP20_DECIMALS)
                 # Precision tolerance: 0.0001 or 1/100th of a cent
@@ -4169,8 +4171,10 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                 save_all_data(data)
                 
                 # Calculate difference
+                # Calculate difference
                 difference = float(expected_amount) - total
-                tolerance = float(expected_amount) * 0.0001
+                # FIX: Use fixed clean tolerance matching line 4221 (0.0001) instead of percentage
+                tolerance = 0.0001
                 
                 if difference > tolerance:
                     print(f"[DEBUG-PARTIAL] Total: {total} | Expected: {expected_amount} | Diff: {difference} | LastNotify: {deal_info.get('last_partial_notification_amount')}")
@@ -4200,7 +4204,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     
                     embed = discord.Embed(
                         title="⚠ Partial Payment Detected",
-                        description=f"Received: {total} {currency_display}\nExpected: {expected_amount} {currency_display}\n**Remaining:** {remaining_str} {currency_display}\n\nDo you want to continue by paying the rest, or cancel?",
+                        description=f"Received: {total:.8f} {currency_display}\nExpected: {expected_amount:.8f} {currency_display}\n**Remaining:** {remaining_str} {currency_display}\n\nDo you want to continue by paying the rest, or cancel?",
                         color=0xffaa00
                     )
                     
