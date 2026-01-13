@@ -4192,8 +4192,18 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     last_notified = deal_info.get("last_partial_notification_amount", -1)
                     if abs(float(total) - float(last_notified)) < 1e-9:
                          # Already notified for this partial amount, skip embed
+                    if abs(float(total) - float(last_notified)) < 1e-9:
+                         # Already notified for this partial amount, skip embed
                         await asyncio.sleep(1)
                         continue
+
+                    # CLEANUP: Delete previous partial message if exists
+                    last_partial_id = deal_info.get("last_partial_msg_id")
+                    if last_partial_id:
+                        try:
+                            old_msg = await channel.fetch_message(int(last_partial_id))
+                            await old_msg.delete()
+                        except: pass
 
                     remaining = difference
                     currency_display = currency.upper().replace("_", " ")
@@ -4209,7 +4219,10 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     )
                     
                     view = PartialPaymentView(deal_id, deal_info, remaining, currency, txid=payment_txid)
-                    await channel.send(embed=embed, view=view)
+                    partial_msg = await channel.send(embed=embed, view=view)
+                    
+                    # Store ID for future cleanup
+                    deal_info["last_partial_msg_id"] = partial_msg.id
 
                     # Update notification state
                     deal_info["last_partial_notification_amount"] = float(total)
@@ -4231,6 +4244,23 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                             logger.debug(f"[MONITOR] JIT check: Deal {deal_id[:8]} already processed. Aborting message.")
                             bot.active_monitors.discard(lock_key)
                             return
+
+                    # JUST-IN-TIME CHECK: Final check of DB before sending message
+                    updated_deal_tuple = get_deal_by_channel(channel.id)
+                    if updated_deal_tuple:
+                        _, updated_deal = updated_deal_tuple
+                        if updated_deal.get('paid') or updated_deal.get('status') in ['escrowed', 'completed', 'cancelled', 'awaiting_withdrawal']:
+                            logger.debug(f"[MONITOR] JIT check: Deal {deal_id[:8]} already processed. Aborting message.")
+                            bot.active_monitors.discard(lock_key)
+                            return
+                            
+                    # CLEANUP: Delete previous partial message if exists (since we are now Full)
+                    last_partial_id = deal_info.get("last_partial_msg_id")
+                    if last_partial_id:
+                        try:
+                            old_msg = await channel.fetch_message(int(last_partial_id))
+                            await old_msg.delete()
+                        except: pass
 
                     # EXACT FULL PAYMENT - IMMEDIATE PREMIUM UI
                     logger.debug(f"[MONITOR] Full payment detected for {deal_id[:8]}. Proceeding to verification.")
