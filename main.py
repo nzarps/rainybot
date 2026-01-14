@@ -5185,9 +5185,8 @@ class BuyerSellerModal(Modal, title="Fill properly below!"):
             new_deal = {
                 "channel_id": str(channel.id),
 
-                "seller": "None",  # Now represents SENDER
-
-                "buyer": "None",  # Now represents RECEIVER
+                "seller": "None",  # Now represents RECEIVER
+                "buyer": "None",  # Now represents SENDER
 
                 "amount": 0.00,
                 "status": "started",
@@ -7854,8 +7853,8 @@ class RefundInitiationView(View):
 
     @discord.ui.button(label="Provide Refund Address", style=discord.ButtonStyle.green, custom_id="refund_provide_addy")
     async def provide_addy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Restriction: Only SENDER (Buyer / seller key in code) can provide address
-        sender_id = int(self.deal.get('seller', 0))
+        # Restriction: Only SENDER (Buyer / buyer key in code) can provide address
+        sender_id = int(self.deal.get('buyer', 0))
         if interaction.user.id != sender_id:
              return await interaction.response.send_message("Only the Buyer (transaction sender) can provide the refund address.", ephemeral=True)
         
@@ -7873,10 +7872,10 @@ class PartialPaymentView(View):
         
     @discord.ui.button(label="Continue", style=discord.ButtonStyle.green, custom_id="partial_continue")
     async def continue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Restriction: Only Sender (Buyer) can continue
-        sender_id = int(self.deal.get('seller', 0))
-        if interaction.user.id != sender_id:
-            return await interaction.response.send_message("Only the sender (Buyer) can choose to continue.", ephemeral=True)
+        # Restriction: Only RECEIVER (Seller / seller key) can accept a partial payment as full
+        receiver_id = int(self.deal.get('seller', 0))
+        if interaction.user.id != receiver_id:
+            return await interaction.response.send_message("Only the receiver (Seller) can choose to accept a partial payment as full.", ephemeral=True)
 
         if self.deal.get('mod_locked'):
             return await interaction.response.send_message("⚠️ This deal has been locked by a moderator. Please contact support for assistance.", ephemeral=True)
@@ -7917,8 +7916,8 @@ class PartialPaymentView(View):
     @discord.ui.button(label="Cancel with Refund", style=discord.ButtonStyle.red, custom_id="partial_cancel")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Allow both Sender (Buyer) and Receiver (Seller) to initiate
-        sender_id = int(self.deal.get('seller', 0))
-        receiver_id = int(self.deal.get('buyer', 0))
+        receiver_id = int(self.deal.get('seller', 0))
+        sender_id = int(self.deal.get('buyer', 0))
         
         if interaction.user.id not in [sender_id, receiver_id]:
             return await interaction.response.send_message("Only the parties involved in this deal can request a refund.", ephemeral=True)
@@ -7955,10 +7954,10 @@ class OverpaymentView(View):
         
     @discord.ui.button(label="Accept Excess Amount", style=discord.ButtonStyle.green, custom_id="overpay_accept")
     async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Restriction: Only Sender (Buyer) can accept
-        sender_id = int(self.deal_info.get('seller', 0))
+        # Restriction: Only Sender (Buyer / buyer key) can accept overpayment (giving it to seller)
+        sender_id = int(self.deal_info.get('buyer', 0))
         if interaction.user.id != sender_id:
-            return await interaction.response.send_message("Only the sender (Buyer) can decide to accept/cancel overpayment.", ephemeral=True)
+            return await interaction.response.send_message("Only the sender (Buyer) can decide to accept overpayment.", ephemeral=True)
 
         await interaction.response.defer()
         
@@ -7991,8 +7990,8 @@ class OverpaymentView(View):
     @discord.ui.button(label="Cancel with Refund", style=discord.ButtonStyle.red, custom_id="overpay_cancel")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Allow both Sender (Buyer) and Receiver (Seller) to initiate
-        sender_id = int(self.deal_info.get('seller', 0))
-        receiver_id = int(self.deal_info.get('buyer', 0))
+        receiver_id = int(self.deal_info.get('seller', 0))
+        sender_id = int(self.deal_info.get('buyer', 0))
         
         if interaction.user.id not in [sender_id, receiver_id]:
             return await interaction.response.send_message("Only the parties involved in this deal can request a refund.", ephemeral=True)
