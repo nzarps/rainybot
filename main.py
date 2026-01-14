@@ -3651,6 +3651,7 @@ async def sweep_dust_fees(deal_id, deal_info=None):
     Should be called just before deal channel deletion.
     """
     try:
+        from web3 import AsyncWeb3, AsyncHTTPProvider
         if not deal_info:
             deal_info = load_all_data().get(str(deal_id))
             
@@ -3666,10 +3667,10 @@ async def sweep_dust_fees(deal_id, deal_info=None):
 
         # Determine chain/native symbol
         chain_type = None
-        if currency in ['usdt_bep20']: chain_type = 'usdt_bep20' # BNB
-        elif currency in ['usdt_polygon']: chain_type = 'usdt_polygon' # MATIC
-        elif currency == 'ethereum': chain_type = 'ethereum' # ETH
-        elif currency == 'solana': chain_type = 'solana' # SOL
+        if currency in ['usdt_bep20']: chain_type = 'usdt_bep20' 
+        elif currency in ['usdt_polygon']: chain_type = 'usdt_polygon'
+        elif currency == 'ethereum': chain_type = 'ethereum'
+        elif currency == 'solana': chain_type = 'solana'
         
         if not chain_type:
             return
@@ -3679,6 +3680,7 @@ async def sweep_dust_fees(deal_id, deal_info=None):
         # Priority: Dust Sweep Address -> Fee Address
         fee_dest = config.DUST_SWEEP_ADDRESS
         if not fee_dest:
+             from services.fee_service import get_fee_address
              fee_dest = get_fee_address(chain_type)
              
         if not fee_dest:
@@ -3689,16 +3691,18 @@ async def sweep_dust_fees(deal_id, deal_info=None):
         if chain_type == 'solana':
             # Solana Sweep
             bal = await get_solana_balance_parallel(address)
-            # Reserve 0.000005 SOL for fee (approx)
+            # Reserve some for fee
             amount = bal - 0.000005
-            if amount > 0.0001: # Min threshold
+            if amount > 0.0001: 
                 logger.info(f"[Sweep] Sweeping {amount} SOL to {fee_dest}")
                 await send_solana(private_key, fee_dest, amount)
                 
         elif chain_type in ['usdt_bep20', 'usdt_polygon', 'ethereum']:
             # EVM Sweep (BNB/MATIC/ETH)
+            rpc_urls = []
+            chain_id = 0
+            symbol = ""
             
-            # 1. Get Balance & Gas Price
             if chain_type == 'usdt_bep20':
                 rpc_urls = BEP20_RPC_URLS
                 chain_id = 56
@@ -3707,70 +3711,57 @@ async def sweep_dust_fees(deal_id, deal_info=None):
                 rpc_urls = POLYGON_RPC_URLS
                 chain_id = 137
                 symbol = "MATIC"
-            else:
+            elif chain_type == 'ethereum':
                 rpc_urls = config.ETH_RPC_URLS
                 chain_id = 1
                 symbol = "ETH"
 
-            session = await get_session()
-            
-            def do_sweep(rpc):
+            for rpc in rpc_urls:
                 try:
-                    w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 5}))
-                    if not w3.is_connected(): return False
+                    w3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs={"timeout": 5}))
+                    if not await w3.is_connected(): continue
                     
-                    params = {
-                        'from': w3.to_checksum_address(address),
-                        'to': w3.to_checksum_address(fee_dest),
-                        'value': 0, # Placeholder
-                    }
+                    from_addr = AsyncWeb3.to_checksum_address(address)
+                    to_addr = AsyncWeb3.to_checksum_address(fee_dest)
                     
-                    gas_price = w3.eth.gas_price
-                    balance = w3.eth.get_balance(params['from'])
-                    
-                    # Estimate gas limit for standard transfer (usually 21000)
+                    balance = await w3.eth.get_balance(from_addr)
+                    gas_price = await w3.eth.gas_price
                     gas_limit = 21000
                     cost = gas_limit * gas_price
                     
                     amount_wei = balance - cost
-                    
                     if amount_wei > 0:
-                        amount_eth = float(w3.from_wei(amount_wei, 'ether'))
+                        amount_eth = float(AsyncWeb3.from_wei(amount_wei, 'ether'))
                         
-                        # Thresholds (don't sweep if < $0.01 worth roughly)
-                        if amount_eth < 0.001 and symbol == "BNB": return True 
-                        if amount_eth < 0.01 and symbol == "MATIC": return True
-                        if amount_eth < 0.0001 and symbol == "ETH": return True
+                        # Thresholds (don't sweep tiny dust that costs more in gas than its worth)
+                        if amount_eth < 0.0005 and symbol == "BNB": return 
+                        if amount_eth < 0.01 and symbol == "MATIC": return
+                        if amount_eth < 0.0001 and symbol == "ETH": return
 
                         logger.info(f"[Sweep] Sweeping {amount_eth} {symbol} to {fee_dest}...")
                         
                         tx = {
-                            'to': params['to'],
+                            'to': to_addr,
                             'value': amount_wei,
                             'gas': gas_limit,
                             'gasPrice': gas_price,
-                            'nonce': w3.eth.get_transaction_count(params['from']),
+                            'nonce': await w3.eth.get_transaction_count(from_addr),
                             'chainId': chain_id
                         }
                         
                         signed = w3.eth.account.sign_transaction(tx, private_key)
-                        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-                        logger.info(f"[Sweep] TX: {w3.to_hex(tx_hash)}")
-                        return True
+                        tx_hash = await w3.eth.send_raw_transaction(signed.raw_transaction)
+                        logger.info(f"[Sweep] Success! TX: {tx_hash.hex()}")
+                        return
                     else:
-                        logger.info(f"[Sweep] Insufficient funds to cover gas.")
-                        return True # Handled
+                        break # Balance < gas cost
                 except Exception as e:
-                    logger.info(f"[Sweep] RPC {rpc} error: {e}")
-                    return False
-
-            # Try RPCs
-            for url in rpc_urls:
-                if await run_blocking(do_sweep, url):
-                    break
+                    logger.debug(f"[Sweep] RPC {rpc} error: {e}")
+                    continue
 
     except Exception as e:
-        logger.info(f"[Sweep] Error: {e}")
+        logger.error(f"[Sweep] Error: {e}")
+
 
 # ========================================
 
