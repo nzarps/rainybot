@@ -3751,7 +3751,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
     bot.active_monitors.add(lock_key)
 
     # If deal is already paid/processed, stop monitoring
-    if deal_info.get('paid') or deal_info.get('status') in ['completed', 'cancelled', 'awaiting_withdrawal']:
+    if deal_info.get('paid') or deal_info.get('status') in ['completed', 'cancelled', 'awaiting_withdrawal', 'refunded']:
         logger.debug(f"[CheckPayment] Deal {deal_id[:16]} already processed/paid. Stopping monitoring.")
         bot.active_monitors.discard(lock_key)
         return
@@ -4183,7 +4183,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     d_tup = get_deal_by_channel(channel.id)
                     if d_tup:
                         _, cd = d_tup
-                        if cd.get('paid') or cd.get('status') in ['completed', 'cancelled', 'escrowed']:
+                        if cd.get('paid') or cd.get('status') in ['completed', 'cancelled', 'escrowed', 'refunded']:
                              logger.debug(f"[MONITOR] Skipping partial notify for {deal_id[:8]} - state is {cd.get('status')}")
                              bot.active_monitors.discard(lock_key)
                              return
@@ -4712,7 +4712,7 @@ async def handle_full_payment(
         data = load_all_data()
         deal_data = data.get(deal_id, {})
         # If already paid or finished, stop.
-        if deal_data.get('status') in ['completed', 'cancelled', 'awaiting_withdrawal'] or deal_data.get('paid'):
+        if deal_data.get('status') in ['completed', 'cancelled', 'awaiting_withdrawal', 'refunded'] or deal_data.get('paid'):
             # if msg:
             #     try: await msg.delete()
             #     except: pass
@@ -4790,6 +4790,9 @@ async def handle_full_payment(
 
         if msg:
             wait_embed = msg.embeds[0]
+            # Immediate swap to remove old buttons
+            try: await msg.edit(view=v_wait)
+            except: pass
         else:
             # Fallback creation (shouldn't happen with new flow)
             currency_meta = get_currency_info(currency)
@@ -4835,7 +4838,7 @@ async def handle_full_payment(
             
             # Update the message to reflect the fixed embed
             if msg:
-                try: await msg.edit(embed=wait_embed)
+                try: await msg.edit(embed=wait_embed, view=v_wait)
                 except: pass
         
         max_confs_seen = 0
@@ -4910,7 +4913,7 @@ async def handle_full_payment(
                 if wait_embed.fields[2].value != new_conf_text:
                     wait_embed.set_field_at(2, name="🔄 Confirmations", value=new_conf_text, inline=False)
                     try: 
-                        await msg.edit(embed=wait_embed)
+                        await msg.edit(embed=wait_embed, view=v_wait)
                         if confs >= 2:
                             await asyncio.sleep(1.5) # Allow user to see "2/2" before transition
                     except: pass
@@ -7917,6 +7920,23 @@ class ReleaseButton(View):
 
 
 
+class RefundInitiationView(View):
+    def __init__(self, deal_id, deal, currency):
+        super().__init__(timeout=None)
+        self.deal_id = deal_id
+        self.deal = deal
+        self.currency = currency
+
+    @discord.ui.button(label="Provide Refund Address", style=discord.ButtonStyle.green, custom_id="refund_provide_addy")
+    async def provide_addy(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Restriction: Only SENDER (Buyer / seller key in code) can provide address
+        sender_id = int(self.deal.get('seller', 0))
+        if interaction.user.id != sender_id:
+             return await interaction.response.send_message("Only the Buyer (transaction sender) can provide the refund address.", ephemeral=True)
+        
+        currency_display = self.currency.upper().replace("_", " ")
+        await interaction.response.send_modal(RefundModal(self.deal_id, self.deal, currency_display, self.currency))
+
 class PartialPaymentView(View):
     def __init__(self, deal_id, deal, remaining_amount, currency, txid=None):
         super().__init__(timeout=None)
@@ -7971,16 +7991,31 @@ class PartialPaymentView(View):
 
     @discord.ui.button(label="Cancel with Refund", style=discord.ButtonStyle.red, custom_id="partial_cancel")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Restriction: Only Buyer (Sender) can cancel
-        # Restriction: Only Sender (Buyer) can cancel
+        # Allow both Sender (Buyer) and Receiver (Seller) to initiate
         sender_id = int(self.deal.get('seller', 0))
-        if interaction.user.id != sender_id:
-            return await interaction.response.send_message("Only the sender (Buyer) can cancel and refund.", ephemeral=True)
-            
-        # User wants to cancel and refund
+        receiver_id = int(self.deal.get('buyer', 0))
         
-        currency_display = self.currency.upper().replace("_", " ")
-        await interaction.response.send_modal(RefundModal(self.deal_id, self.deal, currency_display, self.currency))
+        if interaction.user.id not in [sender_id, receiver_id]:
+            return await interaction.response.send_message("Only the parties involved in this deal can request a refund.", ephemeral=True)
+            
+        await interaction.response.defer()
+        
+        # 1. Update the original message to remove buttons
+        try: await interaction.message.edit(view=None)
+        except: pass
+        
+        # 2. Send the Refund Initiation embed
+        embed = discord.Embed(
+            title="⚠️ Refund Requested",
+            description=(
+                f"<@{interaction.user.id}> has requested a refund for this transaction.\n\n"
+                f"<@{sender_id}>, please click the button below to provide your refund address."
+            ),
+            color=0xff0000
+        )
+        embed.set_footer(text="The transaction will be cancelled once the refund is processed.")
+        
+        await interaction.channel.send(embed=embed, view=RefundInitiationView(self.deal_id, self.deal, self.currency))
 
 class OverpaymentView(View):
     def __init__(self, channel, deal_info, received, expected, currency, txid, msg):
@@ -8030,21 +8065,38 @@ class OverpaymentView(View):
 
     @discord.ui.button(label="Cancel with Refund", style=discord.ButtonStyle.red, custom_id="overpay_cancel")
     async def cancel_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Restriction: Only Buyer (Sender) can cancel
-        buyer_id = int(self.deal_info.get('buyer', 0))
-        if interaction.user.id != buyer_id:
-            return await interaction.response.send_message("Only the sender (Buyer) can cancel and refund.", ephemeral=True)
-
-        currency_display = self.currency.upper().replace("_", " ")
-        currency_display = self.currency.upper().replace("_", " ")
+        # Allow both Sender (Buyer) and Receiver (Seller) to initiate
+        sender_id = int(self.deal_info.get('seller', 0))
+        receiver_id = int(self.deal_info.get('buyer', 0))
+        
+        if interaction.user.id not in [sender_id, receiver_id]:
+            return await interaction.response.send_message("Only the parties involved in this deal can request a refund.", ephemeral=True)
+            
+        await interaction.response.defer()
+        
+        # 1. Update the original message to remove buttons
+        try: await interaction.message.edit(view=None)
+        except: pass
+        
         # deal_id extraction
         deal_id = None
         for k, v in load_all_data().items():
             if v.get('address') == self.deal_info.get('address'):
                 deal_id = k
                 break
+
+        # 2. Send the Refund Initiation embed
+        embed = discord.Embed(
+            title="⚠️ Refund Requested (Overpayment)",
+            description=(
+                f"<@{interaction.user.id}> has requested a refund for this transaction.\n\n"
+                f"<@{sender_id}>, please click the button below to provide your refund address."
+            ),
+            color=0xff0000
+        )
+        embed.set_footer(text="The transaction will be cancelled once the refund is processed.")
         
-        await interaction.response.send_modal(RefundModal(deal_id, self.deal_info, currency_display, self.currency))
+        await interaction.channel.send(embed=embed, view=RefundInitiationView(deal_id, self.deal_info, self.currency))
 
 class RefundModal(Modal):
     def __init__(self, deal_id, deal, currency_display, currency):
