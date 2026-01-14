@@ -1152,8 +1152,8 @@ async def send_ltc(sendaddy, private_key, to_address, amount=None):
 
 
 
-async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls, decimals, chain_id):
-    """Sends USDT using AsyncWeb3."""
+async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls, decimals, chain_id, nonce=None):
+    """Sends USDT using AsyncWeb3 (Supports manual nonce)."""
     from eth_account import Account
     from web3 import AsyncWeb3, AsyncHTTPProvider
 
@@ -1185,7 +1185,12 @@ async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls,
             if balance < send_amount or send_amount <= 0:
                 continue
 
-            nonce = await w3.eth.get_transaction_count(from_address)
+            # Manually manage nonce if provided to prevent parallel collision
+            if nonce is None:
+                current_nonce = await w3.eth.get_transaction_count(from_address)
+            else:
+                current_nonce = nonce
+
             estimated_gas = await contract.functions.transfer(to_checksum, send_amount).estimate_gas({"from": from_address})
 
             # Increase gas price by 20% to ensure fast inclusion
@@ -1196,7 +1201,7 @@ async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls,
                 "chainId": chain_id,
                 "gas": int(estimated_gas * 1.5), # Safer gas limit
                 "gasPrice": fast_gas_price,
-                "nonce": nonce
+                "nonce": current_nonce
             })
 
             signed_tx = w3.eth.account.sign_transaction(tx, private_key)
@@ -1204,10 +1209,11 @@ async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls,
             return tx_hash.hex()
 
         except Exception as e:
-            print(f"RPC Failed ({rpc}): {e}")
+            # logger.debug(f"RPC Failed ({rpc}): {e}")
             continue
 
     raise Exception("All RPC failed or balance too low")
+
 
 
 
@@ -1531,7 +1537,8 @@ async def send_usdt_wallet_with_gas_embed(interaction, deal_id, currency, addres
 
 
 
-async def send_funds_based_on_currency(deal_info, to_address, amount=None, status_msg=None):
+async def send_funds_based_on_currency(deal_info, to_address, amount=None, status_msg=None, nonce=None):
+
 
     """Send funds based on deal currency"""
 
@@ -1573,7 +1580,9 @@ async def send_funds_based_on_currency(deal_info, to_address, amount=None, statu
 
             USDT_BEP20_DECIMALS,
 
-            chain_id=56
+            chain_id=56,
+
+            nonce=nonce
 
         )
 
@@ -1597,9 +1606,11 @@ async def send_funds_based_on_currency(deal_info, to_address, amount=None, statu
 
             POLYGON_RPC_URLS,
 
-            USDT_POLYGON_DECIMALS, 
+            USDT_POLYGON_DECIMALS,
 
-            chain_id=137
+            chain_id=137,
+
+            nonce=nonce
 
         )
 
@@ -1711,6 +1722,13 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
             ))
         except: pass
     
+    # Fetch initial nonce once for centralized management
+    if currency in ['usdt_bep20', 'usdt_polygon', 'ethereum']:
+        current_nonce = await get_evm_nonce_parallel(deal_info.get('address'), currency)
+        logger.info(f"[FEE] Starting nonce for {currency}: {current_nonce}")
+    else:
+        current_nonce = None
+
     try:
         if fee_amount > 0 and fee_address:
             logger.info(f"[FEE] Sending fee of {fee_amount:.8f} {currency} to {fee_address}")
@@ -1720,13 +1738,17 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
             elif currency == 'usdt_bep20':
                 fee_tx = await send_usdt_specific_amount(
                     USDT_BEP20_CONTRACT, private_key, fee_address, 
-                    fee_amount, BEP20_RPC_URLS, USDT_BEP20_DECIMALS, chain_id=56
+                    fee_amount, BEP20_RPC_URLS, USDT_BEP20_DECIMALS, chain_id=56,
+                    nonce=current_nonce
                 )
+                if current_nonce is not None: current_nonce += 1
             elif currency == 'usdt_polygon':
                 fee_tx = await send_usdt_specific_amount(
                     USDT_POLYGON_CONTRACT, private_key, fee_address,
-                    fee_amount, POLYGON_RPC_URLS, USDT_POLYGON_DECIMALS, chain_id=137
+                    fee_amount, POLYGON_RPC_URLS, USDT_POLYGON_DECIMALS, chain_id=137,
+                    nonce=current_nonce
                 )
+                if current_nonce is not None: current_nonce += 1
             elif currency == 'solana':
                 fee_tx = await send_solana(private_key, fee_address, fee_amount)
             elif currency == 'ethereum':
@@ -1749,6 +1771,7 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
                         color=0x0000ff
                     ))
                 except: pass
+
             
             # Wait longer for fee transaction to be mined before sending main tx
             print("[FEE] Waiting 10 seconds for fee transaction to confirm...")
@@ -1776,8 +1799,9 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
             ))
         except: pass
     
-    # Finally send the remaining amount
-    main_tx = await send_funds_based_on_currency(deal_info, to_address, remaining_amount, status_msg=status_msg)
+    # Send main funds
+    print(f"[FEE] Sending remaining amount: {remaining_amount:.8f} {currency}")
+    main_tx = await send_funds_based_on_currency(deal_info, to_address, remaining_amount, status_msg=status_msg, nonce=current_nonce)
     
     return {
         'main_tx': main_tx,
@@ -1787,8 +1811,8 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     }
 
 
-async def send_usdt_specific_amount(contract_address, private_key, to_address, amount, rpc_urls, decimals, chain_id):
-    """Send a specific amount of USDT using AsyncWeb3."""
+async def send_usdt_specific_amount(contract_address, private_key, to_address, amount, rpc_urls, decimals, chain_id, nonce=None):
+    """Send a specific amount of USDT using AsyncWeb3 (Supports manual nonce)."""
     from eth_account import Account
     from web3 import AsyncWeb3, AsyncHTTPProvider
 
@@ -1803,7 +1827,7 @@ async def send_usdt_specific_amount(contract_address, private_key, to_address, a
 
     for rpc in rpc_urls:
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(rpc))
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs={"timeout": 10}))
             if not await w3.is_connected():
                 continue
 
@@ -1815,14 +1839,18 @@ async def send_usdt_specific_amount(contract_address, private_key, to_address, a
             if balance < send_amount:
                 continue
 
-            nonce = await w3.eth.get_transaction_count(from_address)
+            if nonce is None:
+                current_nonce = await w3.eth.get_transaction_count(from_address)
+            else:
+                current_nonce = nonce
+
             estimated_gas = await contract.functions.transfer(to_checksum, send_amount).estimate_gas({"from": from_address})
 
             tx = await contract.functions.transfer(to_checksum, send_amount).build_transaction({
                 "chainId": chain_id,
-                "gas": int(estimated_gas * 1.2),
+                "gas": int(estimated_gas * 1.5),
                 "gasPrice": await w3.eth.gas_price,
-                "nonce": nonce
+                "nonce": current_nonce
             })
 
             signed_tx = w3.eth.account.sign_transaction(tx, private_key)
@@ -1830,10 +1858,11 @@ async def send_usdt_specific_amount(contract_address, private_key, to_address, a
             return tx_hash.hex()
 
         except Exception as e:
-            logger.info(f"[FEE] RPC Failed ({rpc}): {e}")
+            # logger.debug(f"[FEE] RPC Failed ({rpc}): {e}")
             continue
 
     raise Exception("All RPC failed for fee transfer")
+
 
 
 
@@ -3123,7 +3152,7 @@ async def get_ltc_txid_async(address: str):
 
 
 async def get_dynamic_gas_price(currency):
-    """Fetch current gas price in Wei from RPCs."""
+    """Fetch current gas price in Wei from RPCs (Async)."""
     if currency == 'usdt_bep20':
         rpc_urls = config.BEP20_RPC_URLS
     elif currency == 'usdt_polygon':
@@ -3131,15 +3160,16 @@ async def get_dynamic_gas_price(currency):
     else:
         return 0
 
-    from web3 import Web3
+    from web3 import AsyncWeb3, AsyncHTTPProvider
     for rpc in rpc_urls:
         try:
-            w3 = Web3(Web3.HTTPProvider(rpc))
-            if w3.is_connected():
-                return w3.eth.gas_price
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs={"timeout": 5}))
+            if await w3.is_connected():
+                return await w3.eth.gas_price
         except:
             continue
     return 0
+
 
 async def gas_needed_for_currency(currency):
     """
@@ -3157,7 +3187,7 @@ async def gas_needed_for_currency(currency):
     from services.fee_service import should_deduct_fee
     tx_count = 2 if should_deduct_fee(currency) else 1
     
-    # ERC20 transfer gas limit (approx 65,000)
+    # ERC20 transfer gas limit (Standard 65k)
     gas_limit = 65000
     total_gas_needed = gas_limit * tx_count
     
@@ -3168,11 +3198,12 @@ async def gas_needed_for_currency(currency):
 
     # Calculate total native token needed
     needed_wei = total_gas_needed * gas_price
-    # Add a generous 30% buffer for gas price fluctuations and contract complexity
-    needed_with_buffer = int(needed_wei * 1.3)
+    # Add a generous 80% buffer to match the send functions (1.5x gas and 1.2x price = 1.8x)
+    needed_with_buffer = int(needed_wei * 1.8)
     needed_native = needed_with_buffer / 10**18
     
     return needed_native, symbol
+
 
 
 
@@ -8684,7 +8715,35 @@ def get_explorer_url(currency: str, tx_hash: str) -> str:
 
 
 
+async def get_evm_nonce_parallel(address, currency):
+    """Fetch current nonce from multiple RPCs for robustness."""
+    from web3 import AsyncWeb3, AsyncHTTPProvider
+    
+    # Map currency to correct RPC list
+    rpc_urls = []
+    if currency == 'usdt_polygon':
+        rpc_urls = config.POLYGON_RPC_URLS
+    elif currency == 'usdt_bep20':
+        rpc_urls = config.BEP20_RPC_URLS
+    elif currency == 'ethereum':
+        rpc_urls = config.ETH_RPC_URLS
+    
+    if not rpc_urls:
+        return 0
+    
+    for rpc in rpc_urls:
+        try:
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs={"timeout": 5}))
+            if await w3.is_connected():
+                from_addr = AsyncWeb3.to_checksum_address(address)
+                return await w3.eth.get_transaction_count(from_addr)
+        except:
+            continue
+    return 0
+
+
 async def get_evm_confirmations(tx_hash, currency):
+
     """Robust unified EVM confirmation checker (Async)."""
     if not tx_hash: return 0
     from web3 import AsyncWeb3, AsyncHTTPProvider
