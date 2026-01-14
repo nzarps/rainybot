@@ -3678,7 +3678,13 @@ async def sweep_dust_fees(deal_id, deal_info=None):
         logger.info(f"[Sweep] Checking dust for {deal_id} ({chain_type})...")
         
         # Priority: Dust Sweep Address -> Fee Address
-        fee_dest = config.DUST_SWEEP_ADDRESS
+        fee_dest = None
+        if chain_type == 'usdt_bep20':
+            fee_dest = config.DUST_SWEEP_ADDRESS_BSC
+        
+        if not fee_dest:
+            fee_dest = config.DUST_SWEEP_ADDRESS
+            
         if not fee_dest:
              from services.fee_service import get_fee_address
              fee_dest = get_fee_address(chain_type)
