@@ -2385,6 +2385,24 @@ async def fetch_tatum_status(address):
 # UPDATED MAIN STATUS FUNCTION (DROP-IN REPLACEMENT)
 
 # =====================================================
+async def get_balance_for_currency(address, currency):
+    """Robust unified balance checker for all currencies."""
+    try:
+        if currency == 'ltc':
+            s = await api_get_status(address)
+            return float(s['confirmed'] + s['unconfirmed'])
+        elif currency == 'usdt_bep20':
+            return await get_usdt_balance_parallel(USDT_BEP20_CONTRACT, address, BEP20_RPC_URLS, USDT_BEP20_DECIMALS)
+        elif currency == 'usdt_polygon':
+            return await get_usdt_balance_parallel(USDT_POLYGON_CONTRACT, address, POLYGON_RPC_URLS, USDT_POLYGON_DECIMALS)
+        elif currency == 'solana':
+            return await get_solana_balance_parallel(address)
+        elif currency == 'ethereum':
+            return await get_eth_balance_parallel(address)
+    except Exception as e:
+        logger.debug(f"[BalanceHelper] Error checking {currency} for {address}: {e}")
+    return 0.0
+
 
 async def api_get_status(address: str):
 
@@ -3841,130 +3859,29 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
         # ======================
 
         if monitoring_elapsed >= payment_timeout and rescan_message is None:
-
-
-
             try:
-
-                if currency == "ltc":
-
-                    total = await get_ltc_confirmed_balance(address)
-
-                elif currency == "usdt_bep20":
-
-                    total = await get_usdt_balance_parallel(USDT_BEP20_CONTRACT, address, BEP20_RPC_URLS, USDT_BEP20_DECIMALS)
-
-                elif currency == "usdt_polygon":
-
-                    total = await get_usdt_balance_parallel(USDT_POLYGON_CONTRACT, address, POLYGON_RPC_URLS, USDT_POLYGON_DECIMALS)
-
-                elif currency == "solana":
-
-                    total = await get_solana_balance_parallel(address)
-
-                elif currency == "ethereum":
-
-                    total = await get_eth_balance_parallel(address)
-
-                else:
-
-                    total = 0
-
+                # Use robust helper instead of strict confirmed only
+                total_check = await get_balance_for_currency(address, currency)
+                
+                # CRITICAL: Only show timeout if API definitely says 0.
+                if total_check == 0:
+                    remaining = absolute_expiry_time - current_time
+                    minutes_left = int(remaining // 60)
+                    
+                    timeout_embed = discord.Embed(
+                        title="Payment Timeout",
+                        description=f">>> No payment detected within {payment_timeout//60} minutes.\n\nYou still have {minutes_left} minutes to complete the payment.\n\nClick below to extend payment time by 20 minutes.",
+                        color=0xffa500
+                    )
+                    rescan_message = await channel.send(embed=timeout_embed, view=RescanButton())
             except Exception as e:
-
-                total = 0
-                logger.debug(f"[CheckPayment] Balance check error for {currency}: {e}")
-
-
-            logger.debug(f"[CheckPayment] Balance for {deal_id[:10]}: {total} {currency} (expected: {expected_amount})")
-            # Only show timeout if still no payment
-
-            if total == 0:
-
-                remaining = absolute_expiry_time - current_time
-
-                minutes_left = int(remaining // 60)
-
-
-
-                timeout_embed = discord.Embed(
-
-                    title="Payment Timeout",
-
-                    description=f">>> No payment detected within {payment_timeout//60} minutes.\n\nYou still have {minutes_left} minutes to complete the payment.\n\nClick below to extend payment time by 20 minutes.",
-
-                    color=0xffa500
-
-                )
-
-                rescan_message = await channel.send(embed=timeout_embed, view=RescanButton())
-
-
-
-                # Wait for rescan or expiry
-
-                while True:
-
-                    await asyncio.sleep(2)
-
-
-
-                    if time.time() >= absolute_expiry_time:
-                        # Check if wallet has funds before closing - NEVER close if has funds
-                        try:
-                            wallet_balance = await get_balance_for_currency(address, currency)
-                            if wallet_balance > 0:
-                                logger.info(f"[EXPIRY] Deal has funds ({wallet_balance}), skipping expiry - will never close with funds")
-                                await asyncio.sleep(30)  # Just wait and continue monitoring
-                                continue
-                        except Exception as e:
-                            logger.info(f"[EXPIRY] Balance check error: {e}")
-
-                        try: await rescan_message.delete()
-                        except: pass
-                        await channel.send(embed=discord.Embed(
-                            title="Deal Expired",
-                            description=">>> 1 hour passed. Deal closed.",
-                            color=0xff0000
-                        ))
-                        bot.active_monitors.discard(lock_key)
-                        return
-
-
-
-                    updated_deal = get_deal_by_channel(channel.id)
-
-                    if updated_deal and updated_deal["payment_timeout"] > payment_timeout:
-
-                        payment_timeout = updated_deal["payment_timeout"]
-
-                        monitoring_start_time = time.time()
-
-                        try: await rescan_message.delete()
-
-                        except: pass
-
-                        rescan_message = None
-
-                        await channel.send(embed=discord.Embed(
-
-                            title="Payment Time Extended",
-
-                            description=">>> +20 minutes added.",
-
-                            color=0x00ff00
-
-                        ))
-
-                        break
-
-
-
-        # If timeout UI active → pause checks
-
+                logger.debug(f"[CheckPayment] Timeout check error: {e}")
+                pass
+            
+        # [REMOVED PAUSE LOGIC]
+        # We NO LONGER pause checks if a timeout message is showing.
         if rescan_message:
-
-            await asyncio.sleep(2)
+            pass # Keep going, do not continue loop
 
             continue
 
@@ -4027,6 +3944,14 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
             print(f"[MONITOR_ERR] Balance check failed for {currency}: {balance_err}")
             await asyncio.sleep(2)
             continue
+
+        # DISMISS TIMEOUT/EXPIRY if funds found
+        if total > 0 and rescan_message:
+            try: 
+                await rescan_message.delete()
+                rescan_message = None
+            except: pass
+
 
         # ======================
         # AUTO-SWITCH CHAIN (USDT)
@@ -11621,7 +11546,8 @@ async def on_ready():
                 continue
             
             # Get expected amount
-            crypto_amount = deal_info.get('ltc_amount', 0)
+            # FIX: Priority use expected_crypto_amount which is the original target
+            crypto_amount = deal_info.get('expected_crypto_amount', deal_info.get('ltc_amount', 0))
             if crypto_amount <= 0:
                 continue
             
