@@ -4800,21 +4800,27 @@ async def handle_full_payment(
                 # 4. UPDATE UI
                 status_icon = "⏳" if confs < 2 else "✅"
                 new_conf_text = f"`{status_icon} {confs}/2 Confirmations`"
-                if wait_embed.fields[2].value != new_conf_text:
-                    wait_embed.set_field_at(2, name="🔄 Confirmations", value=new_conf_text, inline=False)
-                    try: 
+                
+                # Resilient UI update: Check if field exists and update if different
+                try:
+                    current_val = wait_embed.fields[2].value if len(wait_embed.fields) > 2 else None
+                    if current_val != new_conf_text:
+                        wait_embed.set_field_at(2, name="🔄 Confirmations", value=new_conf_text, inline=False)
                         await msg.edit(embed=wait_embed, view=v_wait)
                         if confs >= 2:
-                            await asyncio.sleep(1.5) # Allow user to see "2/2" before transition
-                    except: pass
+                            await asyncio.sleep(1.5)
+                except Exception as ui_err:
+                    logger.debug(f"[VERIFY_UI] UI Update failed: {ui_err}")
 
-                print(f"[VERIFY_LOOP] Confs for {currency}: {confs} (TXID: {current_txid})")
+                logger.info(f"[VERIFY_LOOP] Deal {deal_id[:8]} | {currency} | Confs: {confs} | TXID: {current_txid}")
                 
                 if confs >= 2:
                     break
                     
             except Exception as e:
-                print(f"[VERIFY_LOOP] Error: {e}")
+                logger.error(f"[VERIFY_ERR] Loop error: {e}", exc_info=True)
+                await asyncio.sleep(2)
+
                 import traceback
                 traceback.print_exc()
                 
@@ -8698,16 +8704,29 @@ async def get_evm_confirmations(tx_hash, currency):
     for url in rpc_urls:
         try:
             w3 = AsyncWeb3(AsyncHTTPProvider(url, request_kwargs={"timeout": 5}))
-            # Quick connection check
+            # Get Receipt
             receipt = await w3.eth.get_transaction_receipt(tx_hash)
-            if receipt and receipt.get('blockNumber'):
-                current_block = await w3.eth.block_number
-                confs = max(0, current_block - receipt['blockNumber'] + 1)
-                return confs
+            if receipt:
+                # Map various possible key names
+                tx_block = receipt.get('blockNumber')
+                if tx_block is None:
+                    # Fallback to key access if .get fails on some implementations
+                    try: tx_block = receipt['blockNumber']
+                    except: pass
+                
+                if tx_block is not None:
+                    # Handle potential hex strings from some RPCs
+                    if isinstance(tx_block, str) and tx_block.startswith("0x"):
+                        tx_block = int(tx_block, 16)
+                        
+                    current_block = await w3.eth.block_number
+                    confs = max(0, current_block - tx_block + 1)
+                    return confs
         except Exception as e:
             # logger.debug(f"[EVM-CONF] Error on {url}: {e}")
             continue
     return 0
+
 
 
 async def get_solana_confirmations(tx_hash):
