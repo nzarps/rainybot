@@ -1153,7 +1153,7 @@ async def send_ltc(sendaddy, private_key, to_address, amount=None):
 
 
 async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls, decimals, chain_id, nonce=None):
-    """Sends USDT using AsyncWeb3 (Supports manual nonce)."""
+    """Sends USDT using AsyncWeb3 (Supports manual nonce & Detailed logging)."""
     from eth_account import Account
     from web3 import AsyncWeb3, AsyncHTTPProvider
 
@@ -1164,6 +1164,7 @@ async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls,
 
     acc = Account.from_key(private_key)
     from_address = acc.address
+    last_error = "No RPC connected"
 
     for rpc in rpc_urls:
         try:
@@ -1182,8 +1183,19 @@ async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls,
             else:
                 send_amount = int(amount * (10 ** decimals))
 
-            if balance < send_amount or send_amount <= 0:
+            if send_amount <= 0:
+                last_error = f"Invalid amount: {send_amount}"
                 continue
+
+            if balance < send_amount:
+                # Robustness: If balance is slightly lower (rounding), use max balance
+                if balance > 0 and (send_amount - balance) < 100: # 100 units is negligible (0.0001 for 6 decimals)
+                     logger.info(f"[EVM] Adjusting dust difference: {send_amount} -> {balance}")
+                     send_amount = balance
+                else:
+                    last_error = f"Balance too low on {rpc}: {balance} < {send_amount}"
+                    logger.info(f"[EVM] {last_error}")
+                    continue
 
             # Manually manage nonce if provided to prevent parallel collision
             if nonce is None:
@@ -1191,28 +1203,36 @@ async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls,
             else:
                 current_nonce = nonce
 
-            estimated_gas = await contract.functions.transfer(to_checksum, send_amount).estimate_gas({"from": from_address})
+            try:
+                estimated_gas = await contract.functions.transfer(to_checksum, send_amount).estimate_gas({"from": from_address})
+            except Exception as est_e:
+                 last_error = f"Gas estimation failed on {rpc}: {est_e}"
+                 logger.info(f"[EVM] {last_error}")
+                 continue
 
             # Increase gas price by 20% to ensure fast inclusion
             current_gas_price = await w3.eth.gas_price
-            fast_gas_price = int(current_gas_price * 1.2)
+            fast_gas_price = int(current_gas_price * 1.5) # Increased to 1.5x for Polygon safety
 
             tx = await contract.functions.transfer(to_checksum, send_amount).build_transaction({
                 "chainId": chain_id,
-                "gas": int(estimated_gas * 1.5), # Safer gas limit
+                "gas": int(estimated_gas * 1.8), # Increased buffer
                 "gasPrice": fast_gas_price,
                 "nonce": current_nonce
             })
 
             signed_tx = w3.eth.account.sign_transaction(tx, private_key)
             tx_hash = await w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            logger.info(f"[EVM] Success on {rpc}: {tx_hash.hex()}")
             return tx_hash.hex()
 
         except Exception as e:
-            # logger.debug(f"RPC Failed ({rpc}): {e}")
+            last_error = f"RPC {rpc} general error: {e}"
+            logger.info(f"[EVM] {last_error}")
             continue
 
-    raise Exception("All RPC failed or balance too low")
+    raise Exception(f"Withdrawal Failed: {last_error}")
+
 
 
 
@@ -1694,9 +1714,10 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     fee_amount, remaining_amount = calculate_fee(amount, currency)
     fee_address = get_fee_address(currency)
     
-    logger.info(f"[FEE] Deducting {fee_amount:.8f} {currency} fee, sending {remaining_amount:.8f} to recipient")
+    logger.info(f"[FEE-TRACE] Amount: {amount}, Fee: {fee_amount}, Remaining: {remaining_amount}, Currency: {currency}")
     
     fee_tx = None
+
     
     # Auto-fund gas for USDT chains before sending
     if currency in ['usdt_bep20', 'usdt_polygon']:
@@ -1812,7 +1833,7 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
 
 
 async def send_usdt_specific_amount(contract_address, private_key, to_address, amount, rpc_urls, decimals, chain_id, nonce=None):
-    """Send a specific amount of USDT using AsyncWeb3 (Supports manual nonce)."""
+    """Send a specific amount of USDT using AsyncWeb3 (Supports manual nonce & Robustness)."""
     from eth_account import Account
     from web3 import AsyncWeb3, AsyncHTTPProvider
 
@@ -1824,6 +1845,7 @@ async def send_usdt_specific_amount(contract_address, private_key, to_address, a
     acc = Account.from_key(private_key)
     from_address = acc.address
     send_amount = int(amount * (10 ** decimals))
+    last_error = "No RPC connected"
 
     for rpc in rpc_urls:
         try:
@@ -1837,31 +1859,49 @@ async def send_usdt_specific_amount(contract_address, private_key, to_address, a
             balance = await contract.functions.balanceOf(from_checksum).call()
             
             if balance < send_amount:
-                continue
+                # Robustness Dust check
+                if balance > 0 and (send_amount - balance) < 100:
+                    logger.info(f"[EVM-FEE] Adjusting dust: {send_amount} -> {balance}")
+                    send_amount = balance
+                else:
+                    last_error = f"Balance too low on {rpc}: {balance} < {send_amount}"
+                    logger.info(f"[EVM-FEE] {last_error}")
+                    continue
 
             if nonce is None:
                 current_nonce = await w3.eth.get_transaction_count(from_address)
             else:
                 current_nonce = nonce
 
-            estimated_gas = await contract.functions.transfer(to_checksum, send_amount).estimate_gas({"from": from_address})
+            try:
+                estimated_gas = await contract.functions.transfer(to_checksum, send_amount).estimate_gas({"from": from_address})
+            except Exception as est_e:
+                last_error = f"Gas estimation failed on {rpc}: {est_e}"
+                logger.info(f"[EVM-FEE] {last_error}")
+                continue
 
+            # Higher gas price and buffer for reliability
+            gas_price = await w3.eth.gas_price
+            
             tx = await contract.functions.transfer(to_checksum, send_amount).build_transaction({
                 "chainId": chain_id,
-                "gas": int(estimated_gas * 1.5),
-                "gasPrice": await w3.eth.gas_price,
+                "gas": int(estimated_gas * 1.8),
+                "gasPrice": int(gas_price * 1.5),
                 "nonce": current_nonce
             })
 
             signed_tx = w3.eth.account.sign_transaction(tx, private_key)
             tx_hash = await w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            logger.info(f"[EVM-FEE] Success on {rpc}: {tx_hash.hex()}")
             return tx_hash.hex()
 
         except Exception as e:
-            # logger.debug(f"[FEE] RPC Failed ({rpc}): {e}")
+            last_error = f"RPC {rpc} general error: {e}"
+            logger.info(f"[EVM-FEE] {last_error}")
             continue
 
-    raise Exception("All RPC failed for fee transfer")
+    raise Exception(f"Fee Transaction Failed: {last_error}")
+
 
 
 
