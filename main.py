@@ -2478,126 +2478,74 @@ async def get_balance_for_currency(address, currency):
 
 
 async def api_get_status(address: str):
-
     """
-
     FINAL ultra-fast LTC balance checker.
-
-    Priority:
-
-        1) LitecoinSpace 40–90ms
-
-        2) BlockCypher
-
-        3) SoChain
-
-    Always returns confirmed + unconfirmed
-
+    Priority: 1) Node, 2) LitecoinSpace (Proxy), 3) BlockCypher, 4) SoChain
     """
-
-    #print(f"[LTC] Checking balance → {address}")
-
-
-
     proxy_url = build_proxy_url()
+    session = await get_session()
 
+    # ⓪ LOCAL NODE (INSTANT)
+    try:
+        unspent = await rpc_async("listunspent", 0, 9999999, [address])
+        conf_bal = 0.0
+        unconf_bal = 0.0
+        for tx in unspent:
+            amt = float(tx.get('amount', 0))
+            if tx.get('confirmations', 0) > 0:
+                conf_bal += amt
+            else:
+                unconf_bal += amt
+        return {"confirmed": conf_bal, "unconfirmed": unconf_bal}
+    except: pass
 
-
-    async with aiohttp.ClientSession() as session:
-
-        # ⓪ LOCAL NODE (INSTANT)
+    # EXTERNAL FALLBACKS
+    async def fetch_litecoinspace():
         try:
-            # listunspent minconf=0, maxconf=9999999, addresses=[address]
-            unspent = await rpc_async("listunspent", 0, 9999999, [address])
-            
-            conf_bal = 0.0
-            unconf_bal = 0.0
-            
-            for tx in unspent:
-                amt = float(tx.get('amount', 0))
-                if tx.get('confirmations', 0) > 0:
-                    conf_bal += amt
-                else:
-                    unconf_bal += amt
-            
-            # If we got a result (even empty), return it. Node is authority.
-            return {"confirmed": conf_bal, "unconfirmed": unconf_bal}
-            
-        except Exception as e:
-            # Fallback if node is down/error
-            pass
-
-        # ① LITECOINSPACE (FASTEST EXTERNAL)
-
-        try:
-
             url = f"https://litecoinspace.org/api/address/{address}"
-
-            async with session.get(url, proxy=proxy_url, timeout=1.2) as r:
-
+            async with session.get(url, proxy=proxy_url, timeout=2) as r:
                 if r.status == 200:
-
                     d = await r.json()
-
                     conf = (d["chain_stats"]["funded_txo_sum"] - d["chain_stats"]["spent_txo_sum"]) / 1e8
-
                     unconf = (d["mempool_stats"]["funded_txo_sum"] - d["mempool_stats"]["spent_txo_sum"]) / 1e8
-
                     return {"confirmed": conf, "unconfirmed": unconf}
+        except: pass
+        return None
 
-        except Exception as e:
-
-            None#print("[LTC] LitecoinSpace fail →", e)
-
-
-
-        # ② BLOCKCYPHER
-
+    async def fetch_blockcypher():
         try:
-
             url = f"https://api.blockcypher.com/v1/ltc/main/addrs/{address}?token={BLOCKCYPHER_KEY}"
-
-            async with session.get(url, timeout=2) as r:
-
+            async with session.get(url, proxy=proxy_url, timeout=2) as r:
                 if r.status == 200:
-
                     d = await r.json()
+                    return {
+                        "confirmed": d.get("balance", 0) / 1e8,
+                        "unconfirmed": d.get("unconfirmed_balance", 0) / 1e8
+                    }
+        except: pass
+        return None
 
-                    conf = d.get("balance", 0) / 1e8
-
-                    unconf = d.get("unconfirmed_balance", 0) / 1e8
-
-                    return {"confirmed": conf, "unconfirmed": unconf}
-
-        except:
-
-            pass
-
-
-
-        # ③ SOCHAIN
-
+    async def fetch_sochain():
         try:
+            url = f"https://chain.so/api/v2/address/LTC/{address}"
+            async with session.get(url, proxy=proxy_url, timeout=2) as r:
+                if r.status == 200:
+                    d = await r.json()
+                    data = d["data"]
+                    return {
+                        "confirmed": float(data["confirmed_balance"]),
+                        "unconfirmed": float(data["unconfirmed_balance"])
+                    }
+        except: pass
+        return None
 
-            url = f"https://sochain.com/api/v2/address/LTC/{address}"
+    # Try components
+    for func in [fetch_litecoinspace, fetch_blockcypher, fetch_sochain]:
+        res = await func()
+        if res is not None:
+            return res
 
-            async with session.get(url, timeout=2) as r:
-
-                d = await r.json()
-
-                data = d["data"]
-
-                return {
-
-                    "confirmed": float(data["confirmed_balance"]),
-
-                    "unconfirmed": float(data["unconfirmed_balance"])
-
-                }
-
-        except:
-
-            pass
+    return {"confirmed": 0.0, "unconfirmed": 0.0}
 
 
 
@@ -2606,111 +2554,89 @@ async def api_get_status(address: str):
 async def get_ltc_confirmations(tx_hash):
     """
     Get exact confirmation count for an LTC transaction.
-    Strategy: Local Node -> BlockCypher -> Blockchair -> SoChain v3
+    Strategy: Local Node -> LitecoinSpace (Proxy) -> BlockCypher -> Blockchair -> SoChain v3
     Returns: int (confirmations) or None (if all APIs fail)
     """
     if not tx_hash: return None
     
-    # 1. LOCAL NODE (Fastest & Most Reliable)
+    # 1. LOCAL NODE (Fastest)
     try:
         tx_data = await rpc_async("getrawtransaction", tx_hash, 1)
         if tx_data:
             return int(tx_data.get("confirmations", 0))
-    except Exception as e:
-        # logging.error(f"[LTC-CONF] Local node failed: {e}") 
-        pass
+    except: pass
 
-    async with aiohttp.ClientSession(headers={"User-Agent": "Mozilla/5.0"}) as session:
-        # Define API Callers
-        async def check_blockcypher():
-            try:
-                url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
-                async with session.get(url, timeout=5) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        if "confirmations" in data: return int(data["confirmations"])
+    proxy_url = build_proxy_url()
+    session = await get_session()
+    
+    # Define API Callers
+    async def check_litecoinspace():
+        try:
+            # First get tx status
+            url = f"https://litecoinspace.org/api/tx/{tx_hash}"
+            async with session.get(url, proxy=proxy_url, timeout=3) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    status = data.get("status", {})
+                    if status.get("confirmed"):
+                        block_height = status.get("block_height")
+                        # Need height tip
+                        async with session.get("https://litecoinspace.org/api/blocks/tip/height", proxy=proxy_url, timeout=2) as r2:
+                            if r2.status == 200:
+                                tip = int(await r2.text())
+                                return max(1, tip - block_height + 1)
                     else:
-                        print(f"[LTC-CONF] BlockCypher failed: {r.status}")
-            except Exception as e:
-                print(f"[LTC-CONF] BlockCypher error: {e}")
-            return None
+                        return 0
+        except: pass
+        return None
 
-        async def check_blockchair():
-            try:
-                url = f"https://api.blockchair.com/litecoin/dashboards/transaction/{tx_hash}"
-                async with session.get(url, timeout=5) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        val = data.get("data", {}).get(tx_hash, {}).get("transaction")
-                        if val and "block_id" in val:
-                            block_height = val["block_id"]
-                            if block_height != -1:
-                                context = data.get("context", {})
-                                state_layer = context.get("state_layer")
-                                if state_layer: return max(0, state_layer - block_height + 1)
-                    else:
-                        print(f"[LTC-CONF] Blockchair failed: {r.status}")
-            except Exception as e:
-                print(f"[LTC-CONF] Blockchair error: {e}")
-            return None
+    async def check_blockcypher():
+        try:
+            url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
+            async with session.get(url, timeout=3) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    if "confirmations" in data: return int(data["confirmations"])
+        except: pass
+        return None
 
-        async def check_litecoinspace():
-            try:
-                url = f"https://litecoinspace.org/api/tx/{tx_hash}/status"
-                async with session.get(url, timeout=5) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        # confirmed: boolean, block_height: int
-                        if data.get("confirmed"):
-                            # We need current height to calc confirmations.
-                            # chain_height = ... wait, status endpoint doesn't give current height?
-                            # Actually usually status gives 'block_height'.
-                            # We need to fetch tip? Or just assume if confirmed=true it's at least 1?
-                            # Better: use their tip endpoint or just use 'confirmations' field if present?
-                            # Mempool API 'status' object usually has 'block_height'.
-                            # To get exact confs we need tip. 
-                            # But wait, BlockCypher gives exact. 
-                            # Let's try to fetch tx wrapper which has 'status'.
-                            pass
-                        
-                # Alternative: Get full tx object
-                url_tx = f"https://litecoinspace.org/api/tx/{tx_hash}"
-                async with session.get(url_tx, timeout=5) as r:
-                     if r.status == 200:
-                        data = await r.json()
-                        status = data.get("status", {})
-                        if status.get("confirmed"):
-                             block_height = status.get("block_height")
-                             # We need chain tip to calculate confs: tip - height + 1
-                             # Let's fetch tip
-                             async with session.get("https://litecoinspace.org/api/blocks/tip/height", timeout=2) as r2:
-                                 if r2.status == 200:
-                                     tip = int(await r2.text())
-                                     return max(1, tip - block_height + 1)
-            except Exception as e:
-                print(f"[LTC-CONF] LitecoinSpace error: {e}")
-            return None
+    async def check_blockchair():
+        try:
+            url = f"https://api.blockchair.com/litecoin/dashboards/transaction/{tx_hash}"
+            async with session.get(url, timeout=3) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    val = data.get("data", {}).get(tx_hash, {}).get("transaction")
+                    if val and "block_id" in val:
+                        block_height = val["block_id"]
+                        if block_height != -1:
+                            state_layer = data.get("context", {}).get("state_layer")
+                            if state_layer: return max(0, state_layer - block_height + 1)
+        except: pass
+        return None
 
-        async def check_sochain_v2():
-            try:
-                url = f"https://chain.so/api/v2/get_tx/LTC/{tx_hash}"
-                async with session.get(url, timeout=5) as r:
-                    if r.status == 200:
-                        d = await r.json()
-                        if d.get("status") == "success":
-                            return int(d["data"]["confirmations"])
-            except: pass
-            return None
+    async def check_sochain_v3():
+        try:
+            # Attempt SoChain v3 or v2 fallback
+            url = f"https://chain.so/api/v2/get_tx/LTC/{tx_hash}"
+            async with session.get(url, timeout=3) as r:
+                if r.status == 200:
+                    d = await r.json()
+                    if d.get("status") == "success":
+                        return int(d["data"]["confirmations"])
+        except: pass
+        return None
 
-        # Randomize Primary Fallbacks
-        apis = [check_litecoinspace, check_blockcypher, check_blockchair, check_sochain_v2]
-        import random
-        random.shuffle(apis)
-
-        for api in apis:
-            res = await api()
-            if res is not None:
-                return res
+    # Try LitecoinSpace FIRST (since user says it's best)
+    res = await check_litecoinspace()
+    if res is not None: return res
+    
+    # Otherwise, try others in parallel
+    calls = [check_blockcypher(), check_blockchair(), check_sochain_v3()]
+    for task in asyncio.as_completed(calls):
+        result = await task
+        if result is not None:
+            return result
 
     return None
 
@@ -3159,7 +3085,7 @@ async def get_ltc_txid_async(address: str):
     async def fetch_blockcypher():
         url = f"https://api.blockcypher.com/v1/ltc/main/addrs/{address}?token={BLOCKCYPHER_KEY}"
         try:
-            async with session.get(url, timeout=1.5) as r:
+            async with session.get(url, proxy=proxy_url, timeout=1.5) as r:
                 if r.status == 200:
                     d = await r.json()
                     all_txs = (d.get("unconfirmed_txrefs") or []) + (d.get("txrefs") or []) # Prefer unconfirmed first
@@ -3168,11 +3094,12 @@ async def get_ltc_txid_async(address: str):
         return []
 
     async def fetch_sochain():
-        url = f"https://sochain.com/api/v2/address/LTC/{address}"
+        url = f"https://chain.so/api/v2/address/LTC/{address}"
         try:
-            async with session.get(url, timeout=1.5) as r:
+            async with session.get(url, proxy=proxy_url, timeout=1.5) as r:
                 d = await r.json()
-                if d.get("data") and d["data"].get("txs"): return [t["txid"] for t in d["data"]["txs"]]
+                if d.get("status") == "success" and d.get("data") and d["data"].get("txs"): 
+                    return [t["txid"] for t in d["data"]["txs"]]
         except: pass
         return []
 
