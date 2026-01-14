@@ -1844,29 +1844,36 @@ async def send_usdt_specific_amount(contract_address, private_key, to_address, a
 
 
 async def get_usdt_balance_parallel(contract_address, wallet, rpc_urls, decimals):
-    # session = await get_session() # Not used for Web3
+    from web3 import AsyncWeb3, AsyncHTTPProvider
     
-    def fetch_balance_sync(rpc):
+    async def fetch_balance(rpc_url):
         try:
-            w3 = Web3(Web3.HTTPProvider(rpc, request_kwargs={"timeout": 5}))
-            if not w3.is_connected(): return None
-            contract = w3.eth.contract(address=w3.to_checksum_address(contract_address), abi=USDT_ABI)
-            bal = contract.functions.balanceOf(w3.to_checksum_address(wallet)).call()
-            return bal / (10 ** decimals)
-        except: return None
-
-    async def fetch_balance(rpc):
-        return await asyncio.get_event_loop().run_in_executor(None, fetch_balance_sync, rpc)
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            if not await w3.is_connected():
+                return None
+            
+            contract = w3.eth.contract(
+                address=w3.to_checksum_address(contract_address),
+                abi=USDT_ABI
+            )
+            
+            bal = await contract.functions.balanceOf(w3.to_checksum_address(wallet)).call()
+            return float(bal / (10 ** decimals))
+        except Exception as e:
+            # logger.debug(f"[USDT-BAL] RPC {rpc_url} failed: {e}")
+            return None
 
     tasks = [asyncio.create_task(fetch_balance(url)) for url in rpc_urls]
-    done, pending = await asyncio.wait(tasks, timeout=5, return_when=asyncio.FIRST_COMPLETED)
+    done, pending = await asyncio.wait(tasks, timeout=6, return_when=asyncio.FIRST_COMPLETED)
     
     for t in done:
-        if t.result() is not None:
+        result = t.result()
+        if result is not None:
             for p in pending: p.cancel()
-            return t.result()
+            return result
             
     return 0.0
+
 
 
 
@@ -3270,24 +3277,30 @@ async def get_usdt_polygon_txid_tatum(address):
     
     async def try_rpc(rpc_url):
         try:
-            def blocking_call():
-                w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
-                if not w3.is_connected():
-                    return None
-                latest = w3.eth.block_number
-                start_block = latest - 500  # ~15 mins, fast
-                logs = w3.eth.get_logs({
-                    "fromBlock": start_block,
-                    "toBlock": latest,
-                    "address": w3.to_checksum_address(USDT_POLYGON_CONTRACT),
-                    "topics": [TRANSFER_TOPIC, None, padded_address]
-                })
-                if logs:
-                    return logs[-1]["transactionHash"].hex()
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            if not await w3.is_connected():
                 return None
-            return await asyncio.get_event_loop().run_in_executor(None, blocking_call)
-        except:
+            
+            latest = await w3.eth.block_number
+            start_block = latest - 1000  # Wider search (~30 mins)
+            
+            logs = await w3.eth.get_logs({
+                "fromBlock": start_block,
+                "toBlock": latest,
+                "address": w3.to_checksum_address(USDT_POLYGON_CONTRACT),
+                "topics": [TRANSFER_TOPIC, None, padded_address]
+            })
+            
+            if logs:
+                tx_hash = logs[-1]["transactionHash"].hex()
+                if not tx_hash.startswith("0x"):
+                    tx_hash = "0x" + tx_hash
+                return tx_hash
             return None
+        except Exception as e:
+            logger.debug(f"[Pol-TXID] RPC {rpc_url} failed: {e}")
+            return None
+
     
     # Run all RPCs in parallel, return first success
     tasks = [asyncio.create_task(try_rpc(url)) for url in POLYGON_RPC_URLS]
@@ -8714,32 +8727,36 @@ def get_explorer_url(currency: str, tx_hash: str) -> str:
 
 
 async def get_evm_confirmations(tx_hash, currency):
-    """
-    Returns the number of confirmations for an EVM transaction.
-    """
-    try:
-        from web3 import Web3
+    """Robust unified EVM confirmation checker (Async)."""
+    if not tx_hash: return 0
+    from web3 import AsyncWeb3, AsyncHTTPProvider
+    
+    # Ensure 0x prefix for string hashes
+    if isinstance(tx_hash, str) and not tx_hash.startswith("0x"):
+        tx_hash = "0x" + tx_hash
         
-        rpc_urls = {
-            "ethereum": ETH_RPC_URLS,
-            "usdt_polygon": POLYGON_RPC_URLS,
-            "usdt_bep20": BEP20_RPC_URLS
-        }.get(currency, [])
-        
-        if not rpc_urls: return 0
-        
-        for url in rpc_urls:
-            try:
-                w3 = Web3(Web3.HTTPProvider(url))
-                receipt = w3.eth.get_transaction_receipt(tx_hash)
-                if receipt and receipt.blockNumber:
-                    current_block = w3.eth.block_number
-                    return max(0, current_block - receipt.blockNumber + 1)
-            except:
-                continue
-    except:
-        pass
+    rpc_urls = {
+        "ethereum": ETH_RPC_URLS,
+        "usdt_polygon": POLYGON_RPC_URLS,
+        "usdt_bep20": BEP20_RPC_URLS
+    }.get(currency, [])
+    
+    if not rpc_urls: return 0
+    
+    for url in rpc_urls:
+        try:
+            w3 = AsyncWeb3(AsyncHTTPProvider(url, request_kwargs={"timeout": 5}))
+            # Quick connection check
+            receipt = await w3.eth.get_transaction_receipt(tx_hash)
+            if receipt and receipt.get('blockNumber'):
+                current_block = await w3.eth.block_number
+                confs = max(0, current_block - receipt['blockNumber'] + 1)
+                return confs
+        except Exception as e:
+            # logger.debug(f"[EVM-CONF] Error on {url}: {e}")
+            continue
     return 0
+
 
 async def get_solana_confirmations(tx_hash):
     """
