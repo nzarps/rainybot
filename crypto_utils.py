@@ -63,35 +63,30 @@ async def get_gas_balance(address, currency):
     return 0.0
 
 async def get_eth_balance_parallel(address):
-    """Get ETH balance from multiple RPCs in parallel"""
-    
-    def fetch_balance_sync(rpc_url):
-        """Synchronous balance fetch - runs in thread pool"""
-        try:
-            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
-            if not w3.is_connected():
-                return None
-            balance_wei = w3.eth.get_balance(Web3.to_checksum_address(address))
-            balance_eth = balance_wei / (10 ** 18)
-            return float(balance_eth)
-        except Exception as e:
-            print(f"[ETH-RPC] Error ({rpc_url}): {e}")
-            return None
+    """Get ETH balance from multiple RPCs in parallel (Async)."""
+    from web3 import AsyncWeb3, AsyncHTTPProvider
     
     async def fetch_balance(rpc_url):
-        """Async wrapper for sync balance fetch"""
-        return await asyncio.to_thread(fetch_balance_sync, rpc_url)
+        try:
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            if not await w3.is_connected():
+                return None
+            balance_wei = await w3.eth.get_balance(Web3.to_checksum_address(address))
+            return float(balance_wei / (10 ** 18))
+        except Exception as e:
+            return None
+            
+    tasks = [asyncio.create_task(fetch_balance(url)) for url in config.ETH_RPC_URLS]
+    done, pending = await asyncio.wait(tasks, timeout=6, return_when=asyncio.FIRST_COMPLETED)
     
-    tasks = [fetch_balance(url) for url in config.ETH_RPC_URLS]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    for i, result in enumerate(results):
-        if isinstance(result, (int, float)) and result >= 0:
-            print(f"[ETH-BALANCE] Address {address[:10]}... = {result} ETH (via RPC #{i+1})")
-            return result
-    
-    print(f"[ETH-BALANCE] All RPCs failed for {address[:10]}... - returning 0.0")
+    for t in done:
+        res = t.result()
+        if res is not None:
+            for p in pending: p.cancel()
+            return res
+            
     return 0.0
+
 
 
 async def get_last_eth_txhash(address):

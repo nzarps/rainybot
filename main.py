@@ -494,35 +494,32 @@ async def generate_wallet_for_currency(deal_id, currency):
 
 
 async def get_eth_balance_parallel(address):
-    """Get ETH balance from multiple RPCs in parallel"""
-    
-    def fetch_balance_sync(rpc_url):
-        """Synchronous balance fetch - runs in thread pool"""
-        try:
-            w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
-            if not w3.is_connected():
-                return None
-            balance_wei = w3.eth.get_balance(Web3.to_checksum_address(address))
-            balance_eth = balance_wei / (10 ** 18)
-            return float(balance_eth)
-        except Exception as e:
-            logger.error(f"[ETH-RPC] Error ({rpc_url}): {e}")
-            return None
+    """Get ETH balance from multiple RPCs in parallel (Async)."""
+    from web3 import AsyncWeb3, AsyncHTTPProvider
     
     async def fetch_balance(rpc_url):
-        """Async wrapper for sync balance fetch"""
-        return await asyncio.to_thread(fetch_balance_sync, rpc_url)
+        try:
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            if not await w3.is_connected():
+                return None
+            balance_wei = await w3.eth.get_balance(w3.to_checksum_address(address))
+            return float(balance_wei / (10 ** 18))
+        except Exception as e:
+            # logger.debug(f"[ETH-RPC] Error ({rpc_url}): {e}")
+            return None
+            
+    tasks = [asyncio.create_task(fetch_balance(url)) for url in ETH_RPC_URLS]
+    done, pending = await asyncio.wait(tasks, timeout=6, return_when=asyncio.FIRST_COMPLETED)
     
-    tasks = [fetch_balance(url) for url in ETH_RPC_URLS]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    for i, result in enumerate(results):
-        if isinstance(result, (int, float)) and result >= 0:
-            logger.info(f"[ETH-BALANCE] Address {address[:10]}... = {result} ETH (via RPC #{i+1})")
-            return result
-    
-    logger.error(f"[ETH-BALANCE] All RPCs failed for {address[:10]}... - returning 0.0")
+    for t in done:
+        res = t.result()
+        if res is not None:
+            for p in pending: p.cancel()
+            # logger.info(f"[ETH-BALANCE] Address {address[:10]}... = {res} ETH")
+            return res
+            
     return 0.0
+
 
 async def get_eth_block_number():
     """Get current ETH block number from multiple RPCs using AsyncWeb3"""
@@ -2990,66 +2987,10 @@ async def run_blocking(func, *args):
 
 
 async def get_balance_async(address):
+    """Safe, fast, fully non-blocking LTC balance checker (ROBUST)."""
+    s = await api_get_status(address)
+    return float(s.get("confirmed", 0)), float(s.get("unconfirmed", 0))
 
-    """Safe, fast, fully non-blocking LTC balance checker."""
-
-    async with aiohttp.ClientSession() as session:
-
-
-
-        # BlockCypher
-
-        try:
-
-            url = f"https://api.blockcypher.com/v1/ltc/main/addrs/{address}"
-
-            async with session.get(url, timeout=6) as r:
-
-                if r.status == 200:
-
-                    data = await r.json()
-
-                    return (
-
-                        data.get("balance", 0) / 1e8,
-
-                        data.get("unconfirmed_balance", 0) / 1e8
-
-                    )
-
-        except:
-
-            pass
-
-
-
-        # SoChain (fallback)
-
-        try:
-
-            url = f"https://sochain.com/api/v2/address/LTC/{address}"
-
-            async with session.get(url, timeout=6) as r:
-
-                data = await r.json()
-
-                d = data["data"]
-
-                return (
-
-                    float(d["confirmed_balance"]),
-
-                    float(d["unconfirmed_balance"])
-
-                )
-
-        except:
-
-            pass
-
-
-
-    return 0.0, 0.0
 
 
 
@@ -3399,37 +3340,51 @@ async def tatum_get_usdt_logs(start_block, end_block, to_address=None):
 
 
 
-async def get_usdt_bep20_txid_tatum(address):
-
-    """Pure blockchain USDT-BEP20 TXID detector (most reliable)"""
-
-    try:
-
-        address = address.lower()
-
-        if not address.startswith("0x"):
-
-            address = "0x" + address
-
-
-
-        latest = await tatum_get_latest_block()
-        if not latest:
+async def get_usdt_bep20_txid_parallel(address):
+    """Fetch USDT BEP20 TXID using parallel RPC calls (fastest response wins)."""
+    from web3 import AsyncWeb3, AsyncHTTPProvider
+    import asyncio
+    
+    address_bare = address.lower().replace("0x", "")
+    padded_address = "0x" + address_bare.zfill(64)
+    
+    async def try_rpc(rpc_url):
+        try:
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            if not await w3.is_connected():
+                return None
+            
+            latest = await w3.eth.block_number
+            start_block = latest - 1000  # Wider search (~30 mins)
+            
+            logs = await w3.eth.get_logs({
+                "fromBlock": start_block,
+                "toBlock": latest,
+                "address": w3.to_checksum_address(USDT_BEP20_CONTRACT),
+                "topics": [TRANSFER_TOPIC, None, padded_address]
+            })
+            
+            if logs:
+                tx_hash = logs[-1]["transactionHash"].hex()
+                if not tx_hash.startswith("0x"):
+                    tx_hash = "0x" + tx_hash
+                return tx_hash
+            return None
+        except Exception as e:
+            logger.debug(f"[BEP20-TXID] RPC {rpc_url} failed: {e}")
             return None
 
-        start_block = latest - 700
-        # Pass address for indexed filtering
-        logs = await tatum_get_usdt_logs(start_block, latest, address)
+    # Run all RPCs in parallel, return first success
+    tasks = [asyncio.create_task(try_rpc(url)) for url in BEP20_RPC_URLS]
+    done, pending = await asyncio.wait(tasks, timeout=8, return_when=asyncio.FIRST_COMPLETED)
+    
+    for t in done:
+        result = t.result()
+        if result:
+            for p in pending: p.cancel()
+            return result
+    return None
 
-        if logs:
-            # Return the most recent transaction hash directly
-            return logs[-1]["transactionHash"]
-
-        return None
-
-    except:
-
-        return None
 
 
 
@@ -3449,11 +3404,12 @@ async def fetch_txid_ultimate(address, currency, max_attempts=8):
 
         if currency == "usdt_bep20":
 
-            txid = await get_usdt_bep20_txid_tatum(address)
+            txid = await get_usdt_bep20_txid_parallel(address)
 
             if txid:
 
                 return txid
+
 
 
 
@@ -3895,10 +3851,6 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
         # We NO LONGER pause checks if a timeout message is showing.
         if rescan_message:
             pass # Keep going, do not continue loop
-
-            continue
-
-
 
         await asyncio.sleep(1.5)  # Faster detection (1.5s interval)
 
