@@ -4842,7 +4842,7 @@ async def handle_full_payment(
                 import traceback
                 traceback.print_exc()
                 
-            await asyncio.sleep(5)
+            await asyncio.sleep(1.5)  # Real-time updates for confirmations
 
         # FINAL STEP: SUCCESS TRANSITION
         if confs < 2:
