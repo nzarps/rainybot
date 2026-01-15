@@ -618,58 +618,81 @@ async def get_last_eth_txhash(address):
 
 
 
-async def send_eth(private_key, to_address, amount=None):
-    """Sends ETH using AsyncWeb3."""
+async def send_eth(private_key, to_address, amount=None, nonce=None):
+    """Sends ETH using AsyncWeb3 (Supports manual nonce & Detailed logging)."""
     from eth_account import Account
     from web3 import AsyncWeb3, AsyncHTTPProvider
 
-    account = Account.from_key(private_key)
-    from_address = account.address
+    acc = Account.from_key(private_key)
+    from_address = acc.address
+    last_error = "No RPC connected"
 
-    for rpc_url in ETH_RPC_URLS:
+    # Map currency to correct RPC list (fallback to ETH_RPC_URLS)
+    rpc_urls = ETH_RPC_URLS
+
+    for rpc in rpc_urls:
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 10}))
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs={"timeout": 10}))
             if not await w3.is_connected():
                 continue
 
-            balance = await w3.eth.get_balance(from_address)
-            nonce = await w3.eth.get_transaction_count(from_address)
-            gas_limit = 21000
+            from_checksum = AsyncWeb3.to_checksum_address(from_address)
+            to_checksum = AsyncWeb3.to_checksum_address(to_address)
+
+            balance = await w3.eth.get_balance(from_checksum)
+            
+            # Manually manage nonce if provided to prevent parallel collision
+            current_nonce = nonce if nonce is not None else await w3.eth.get_transaction_count(from_address)
+
+            gas_limit = 21000  # Standard ETH transfer
             gas_price = await w3.eth.gas_price
-            gas_cost = gas_limit * gas_price
+            
+            # Increase gas price by 50% for fast inclusion
+            fast_gas_price = int(gas_price * 1.5)
+            gas_cost = gas_limit * fast_gas_price
 
             if amount is None:
-                amount_to_send = balance - gas_cost
+                # Sweep all
+                send_amount = balance - gas_cost
             else:
-                amount_to_send = int(amount * (10**18))
-                if balance < (amount_to_send + gas_cost):
-                    raise Exception(f"Insufficient ETH balance: {balance} < {amount_to_send + gas_cost}")
+                send_amount = int(amount * (10**18))
 
-            if amount_to_send <= 0:
-                raise Exception("Nothing to send after gas fee.")
+            if send_amount <= 0:
+                last_error = f"Insufficient funds to cover gas: Balance {balance} < Cost {gas_cost}"
+                logger.info(f"[ETH] {last_error}")
+                continue
+
+            if balance < (send_amount + gas_cost):
+                last_error = f"Insufficient balance on {rpc}: {balance} < {send_amount} + {gas_cost}"
+                logger.info(f"[ETH] {last_error}")
+                continue
 
             tx = {
-                "nonce": nonce,
-                "to": AsyncWeb3.to_checksum_address(to_address),
-                "value": amount_to_send,
+                "nonce": current_nonce,
+                "to": to_checksum,
+                "value": send_amount,
                 "gas": gas_limit,
-                "gasPrice": gas_price,
-                "chainId": 1
+                "gasPrice": fast_gas_price,
+                "chainId": 1 # Ethereum Mainnet
             }
 
             signed_tx = w3.eth.account.sign_transaction(tx, private_key)
-            raw_tx = getattr(signed_tx, "rawTransaction", getattr(signed_tx, "raw_transaction", None))
+            
+            # Handle different versions of signed_tx attribute names
+            raw_tx = getattr(signed_tx, "raw_transaction", getattr(signed_tx, "rawTransaction", None))
             if raw_tx is None:
-                raise Exception("Unable to get raw TX bytes")
+                raise Exception("Unable to get raw TX bytes from signed transaction")
 
             tx_hash = await w3.eth.send_raw_transaction(raw_tx)
+            logger.info(f"[ETH] Success on {rpc}: {tx_hash.hex()}")
             return tx_hash.hex()
 
         except Exception as e:
-            logger.error(f"ETH send failed ({rpc_url}): {e}")
+            last_error = f"RPC {rpc} general error: {e}"
+            logger.info(f"[ETH] {last_error}")
             continue
 
-    raise Exception("All ETH RPC endpoints failed")
+    raise Exception(f"ETH Withdrawal Failed: {last_error}")
 
 
 
@@ -1652,7 +1675,7 @@ async def send_funds_based_on_currency(deal_info, to_address, amount=None, statu
 
             amount = deal_info.get('ltc_amount')
 
-        return await send_eth(private_key, to_address, amount)
+        return await send_eth(private_key, to_address, amount, nonce=nonce)
 
     
 
@@ -1773,7 +1796,7 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
             elif currency == 'solana':
                 fee_tx = await send_solana(private_key, fee_address, fee_amount)
             elif currency == 'ethereum':
-                fee_tx = await send_eth(private_key, fee_address, fee_amount)
+                fee_tx = await send_eth(private_key, fee_address, fee_amount, nonce=current_nonce)
             
             logger.info(f"[FEE] Fee transaction sent: {fee_tx}")
             
