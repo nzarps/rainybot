@@ -2580,87 +2580,78 @@ async def get_ltc_confirmations(tx_hash):
     Strategy: Local Node -> LitecoinSpace (Proxy) -> BlockCypher -> Blockchair -> SoChain v3
     Returns: int (confirmations) or None (if all APIs fail)
     """
-    if not tx_hash: return None
+    if not tx_hash: 
+        logger.warning("[LTC_CONF] No tx_hash provided")
+        return None
     
     # 1. LOCAL NODE (Fastest)
     try:
         tx_data = await rpc_async("getrawtransaction", tx_hash, 1)
         if tx_data:
-            return int(tx_data.get("confirmations", 0))
-    except: pass
+            confs = int(tx_data.get("confirmations", 0))
+            logger.info(f"[LTC_CONF] Local RPC returned {confs} confirmations for {tx_hash[:16]}...")
+            return confs
+    except Exception as e:
+        logger.debug(f"[LTC_CONF] Local RPC failed: {e}")
 
     proxy_url = build_proxy_url()
     session = await get_session()
     
-    # Define API Callers
     async def check_litecoinspace():
         try:
             # First get tx status
             url = f"https://litecoinspace.org/api/tx/{tx_hash}"
-            async with session.get(url, proxy=proxy_url, timeout=3) as r:
+            async with session.get(url, proxy=proxy_url, timeout=4) as r:
                 if r.status == 200:
                     data = await r.json()
                     status = data.get("status", {})
                     if status.get("confirmed"):
                         block_height = status.get("block_height")
                         # Need height tip
-                        async with session.get("https://litecoinspace.org/api/blocks/tip/height", proxy=proxy_url, timeout=2) as r2:
+                        async with session.get("https://litecoinspace.org/api/blocks/tip/height", proxy=proxy_url, timeout=3) as r2:
                             if r2.status == 200:
                                 tip = int(await r2.text())
-                                return max(1, tip - block_height + 1)
+                                confs = max(1, tip - block_height + 1)
+                                logger.info(f"[LTC_CONF] LitecoinSpace returned {confs} confirmations")
+                                return confs
                     else:
+                        logger.info(f"[LTC_CONF] LitecoinSpace: TX not confirmed yet")
                         return 0
-        except: pass
+                else:
+                    logger.warning(f"[LTC_CONF] LitecoinSpace HTTP {r.status}")
+        except Exception as e:
+            logger.warning(f"[LTC_CONF] LitecoinSpace error: {e}")
         return None
 
     async def check_blockcypher():
         try:
             url = f"https://api.blockcypher.com/v1/ltc/main/txs/{tx_hash}"
-            async with session.get(url, timeout=3) as r:
+            async with session.get(url, timeout=4) as r:
                 if r.status == 200:
                     data = await r.json()
-                    if "confirmations" in data: return int(data["confirmations"])
-        except: pass
+                    if "confirmations" in data: 
+                        confs = int(data["confirmations"])
+                        logger.info(f"[LTC_CONF] BlockCypher returned {confs} confirmations")
+                        return confs
+                elif r.status == 429:
+                    logger.warning(f"[LTC_CONF] BlockCypher Rate Limit")
+                else:
+                    logger.warning(f"[LTC_CONF] BlockCypher HTTP {r.status}")
+        except Exception as e:
+            logger.warning(f"[LTC_CONF] BlockCypher error: {e}")
         return None
 
-    async def check_blockchair():
-        try:
-            url = f"https://api.blockchair.com/litecoin/dashboards/transaction/{tx_hash}"
-            async with session.get(url, timeout=3) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    val = data.get("data", {}).get(tx_hash, {}).get("transaction")
-                    if val and "block_id" in val:
-                        block_height = val["block_id"]
-                        if block_height != -1:
-                            state_layer = data.get("context", {}).get("state_layer")
-                            if state_layer: return max(0, state_layer - block_height + 1)
-        except: pass
-        return None
-
-    async def check_sochain_v3():
-        try:
-            # Attempt SoChain v3 or v2 fallback
-            url = f"https://chain.so/api/v2/get_tx/LTC/{tx_hash}"
-            async with session.get(url, timeout=3) as r:
-                if r.status == 200:
-                    d = await r.json()
-                    if d.get("status") == "success":
-                        return int(d["data"]["confirmations"])
-        except: pass
-        return None
-
-    # Try LitecoinSpace FIRST (since user says it's best)
+    # Try LitecoinSpace FIRST
+    logger.info(f"[LTC_CONF] Checking confirmations for {tx_hash[:16]}...")
     res = await check_litecoinspace()
     if res is not None: return res
     
-    # Otherwise, try others in parallel
-    calls = [check_blockcypher(), check_blockchair(), check_sochain_v3()]
-    for task in asyncio.as_completed(calls):
-        result = await task
-        if result is not None:
-            return result
+    # Try BlockCypher as backup
+    logger.info(f"[LTC_CONF] LitecoinSpace failed, trying BlockCypher...")
+    res = await check_blockcypher()
+    if res is not None: return res
 
+    logger.error(f"[LTC_CONF] All APIs failed for {tx_hash[:16]}...")
     return None
 
 
@@ -4750,7 +4741,8 @@ async def handle_full_payment(
                 except: pass
         
         max_confs_seen = 0
-        for i in range(720): # Max 60 mins (720 * 5s = 3600s)
+        last_ui_confs = -1  # Track last UI update to avoid redundant edits
+        for i in range(240): # Max 12 mins (240 * 3s = 720s)
             try:
                 # 1. RETRY TXID if missing
                 if not current_txid:
@@ -4771,13 +4763,24 @@ async def handle_full_payment(
                 tick_confs = 0 # Confirmations seen in this tick
                 if currency == "ltc":
                     res = await get_ltc_confirmations(current_txid)
+                    logger.info(f"[VERIFY_LTC] TXID: {current_txid} | API Response: {res}")
                     if res is not None:
                         tick_confs = res
                         max_confs_seen = max(max_confs_seen, tick_confs)
+                        logger.info(f"[VERIFY_LTC] Updated tick_confs={tick_confs}, max_confs_seen={max_confs_seen}")
+                    else:
+                        logger.warning(f"[VERIFY_LTC] API returned None for TXID: {current_txid}")
                     # If None, strictly ignore (keep max_confs_seen as is)
                 elif currency in ["usdt_polygon", "usdt_bep20", "ethereum"]:
                     if current_txid:
-                        tick_confs = await get_evm_confirmations(current_txid, currency)
+                        # Resolve RPCs
+                        rpcs = []
+                        if currency == "ethereum": rpcs = ETH_RPC_URLS
+                        elif currency == "usdt_bep20": rpcs = BEP20_RPC_URLS
+                        elif currency == "usdt_polygon": rpcs = POLYGON_RPC_URLS
+                        
+                        tick_confs = await get_evm_confirmations(current_txid, rpcs)
+                        logger.info(f"[VERIFY_EVM] {currency} TXID: {current_txid} | Confs: {tick_confs}")
                         max_confs_seen = max(max_confs_seen, tick_confs)
                     else:
                         # STALL FALLBACK: If TXID indexing is slow, check direct balance
@@ -4798,7 +4801,8 @@ async def handle_full_payment(
                         except: pass
                 elif currency == "solana":
                     if current_txid:
-                        tick_confs = await get_solana_confirmations(current_txid)
+                        tick_confs = await get_solana_confirmations(current_txid, SOLANA_RPC_URLS)
+                        logger.info(f"[VERIFY_SOL] TXID: {current_txid} | Confs: {tick_confs}")
                         max_confs_seen = max(max_confs_seen, tick_confs)
                     else:
                         # Solana fallback
@@ -4815,22 +4819,24 @@ async def handle_full_payment(
                 # Sync confs for UI
                 confs = max_confs_seen
 
-                # 4. UPDATE UI
+                # 4. UPDATE UI (Only when confirmations change to avoid Discord rate limits)
                 status_icon = "⏳" if confs < 2 else "✅"
                 new_conf_text = f"`{status_icon} {confs}/2 Confirmations`"
                 
-                # Resilient UI update: Check if field exists and update if different
-                try:
-                    current_val = wait_embed.fields[2].value if len(wait_embed.fields) > 2 else None
-                    if current_val != new_conf_text:
-                        wait_embed.set_field_at(2, name="🔄 Confirmations", value=new_conf_text, inline=False)
-                        await msg.edit(embed=wait_embed, view=v_wait)
-                        if confs >= 2:
-                            await asyncio.sleep(1.5)
-                except Exception as ui_err:
-                    logger.debug(f"[VERIFY_UI] UI Update failed: {ui_err}")
+                # Update UI only if confirmations changed
+                if confs != last_ui_confs:
+                    try:
+                        if len(wait_embed.fields) > 2:
+                            wait_embed.set_field_at(2, name="🔄 Confirmations", value=new_conf_text, inline=False)
+                            await msg.edit(embed=wait_embed, view=v_wait)
+                            last_ui_confs = confs
+                            logger.info(f"[VERIFY_UI] Updated UI: {new_conf_text}")
+                            if confs >= 2:
+                                await asyncio.sleep(1.5)
+                    except Exception as ui_err:
+                        logger.error(f"[VERIFY_UI] UI Update failed: {ui_err}", exc_info=True)
 
-                logger.info(f"[VERIFY_LOOP] Deal {deal_id[:8]} | {currency} | Confs: {confs} | TXID: {current_txid}")
+                logger.info(f"[VERIFY_LOOP] Iteration {i+1}/240 | Deal {deal_id[:8]} | {currency} | Confs: {confs}/{max_confs_seen} | TXID: {current_txid}")
                 
                 if confs >= 2:
                     break
@@ -4842,7 +4848,7 @@ async def handle_full_payment(
                 import traceback
                 traceback.print_exc()
                 
-            await asyncio.sleep(1.5)  # Real-time updates for confirmations
+            await asyncio.sleep(3)  # Reduced API pressure while maintaining responsiveness
 
         # FINAL STEP: SUCCESS TRANSITION
         if confs < 2:

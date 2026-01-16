@@ -1,3 +1,4 @@
+from services import get_session
 
 async def get_evm_confirmations(txid, rpc_urls):
     """Get confirmations for an EVM transaction."""
@@ -29,7 +30,7 @@ async def get_evm_confirmations(txid, rpc_urls):
             
     return 0
 
-async def get_solana_confirmations(txid):
+async def get_solana_confirmations(txid, rpc_urls):
     """Get confirmations for a Solana transaction."""
     # For Solana, we typically check for 'confirmed' or 'finalized' status
     # But to map to 0/2, 1/2, 2/2 logic:
@@ -42,7 +43,7 @@ async def get_solana_confirmations(txid):
     
     session = await get_session()
     
-    for rpc in SOLANA_RPC_URLS:
+    for rpc in rpc_urls:
         try:
             payload = {
                 "jsonrpc": "2.0",
