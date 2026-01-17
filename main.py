@@ -4058,7 +4058,8 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                         else:
                             detect_embed.set_author(name="Payment Detected", icon_url="https://cdn.discordapp.com/emojis/1324706325112164404.gif")
 
-                        detect_embed.add_field(name="💰 Amount", value=f"`{format_crypto_amount(total)}` {currency_meta['name']}", inline=True)
+                        detect_embed.add_field(name="💰 Received", value=f"`{format_crypto_amount(total)}` {currency_meta['name']}", inline=True)
+                        detect_embed.add_field(name="🎯 Required", value=f"`{format_crypto_amount(expected_amount)}` {currency_meta['name']}", inline=True)
                         detect_embed.add_field(name="💵 USD Value", value=f"`${usd_approx:.2f}`", inline=True)
                         detect_embed.add_field(name="🔄 Confirmations", value="`⏳ 0/2 Confirmations`", inline=False)
                         detect_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1438896774243942432/1446517314433454342/discotools-xyz-icon.png")
@@ -4247,7 +4248,8 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     else:
                         wait_embed.set_author(name="Payment Detected", icon_url="https://cdn.discordapp.com/emojis/1324706325112164404.gif")
 
-                    wait_embed.add_field(name="💰 Amount", value=f"`{format_crypto_amount(total)}` {currency_meta['name']}", inline=True)
+                    wait_embed.add_field(name="💰 Received", value=f"`{format_crypto_amount(total)}` {currency_meta['name']}", inline=True)
+                    wait_embed.add_field(name="🎯 Required", value=f"`{format_crypto_amount(expected_amount)}` {currency_meta['name']}", inline=True)
                     wait_embed.add_field(name="💵 USD Value", value=f"${usd_val:.2f}", inline=True)
                     wait_embed.add_field(name="🔄 Confirmations", value="⏳ 0/2 Confirmations", inline=False)
                     
