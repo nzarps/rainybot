@@ -4794,62 +4794,58 @@ async def handle_full_payment(
                     try: await msg.edit(view=v_wait)
                     except: pass
 
-                # 3. CHECK CONFIRMATIONS
-                tick_confs = 0 # Confirmations seen in this tick
+                # 3. CHECK CONFIRMATIONS (Parallel Strategy)
+                tick_confs = 0 
                 if currency == "ltc":
                     res = await get_ltc_confirmations(current_txid)
-                    logger.info(f"[VERIFY_LTC] TXID: {current_txid} | API Response: {res}")
                     if res is not None:
                         tick_confs = res
                         max_confs_seen = max(max_confs_seen, tick_confs)
-                        logger.info(f"[VERIFY_LTC] Updated tick_confs={tick_confs}, max_confs_seen={max_confs_seen}")
-                    else:
-                        logger.warning(f"[VERIFY_LTC] API returned None for TXID: {current_txid}")
-                    # If None, strictly ignore (keep max_confs_seen as is)
+                
                 elif currency in ["usdt_polygon", "usdt_bep20", "ethereum"]:
+                    # DUAL-TRACK: We check BOTH TXID and Balance simultaneously for maximum reliability
+                    rpcs = []
+                    if currency == "ethereum": rpcs = ETH_RPC_URLS
+                    elif currency == "usdt_bep20": rpcs = BEP20_RPC_URLS
+                    elif currency == "usdt_polygon": rpcs = POLYGON_RPC_URLS
+                    
+                    # Track 1: TXID-based confirmations
                     if current_txid:
-                        # Resolve RPCs
-                        rpcs = []
-                        if currency == "ethereum": rpcs = ETH_RPC_URLS
-                        elif currency == "usdt_bep20": rpcs = BEP20_RPC_URLS
-                        elif currency == "usdt_polygon": rpcs = POLYGON_RPC_URLS
-                        
                         tick_confs = await get_evm_confirmations(current_txid, rpcs)
-                        logger.info(f"[VERIFY_EVM] {currency} TXID: {current_txid} | Confs: {tick_confs}")
                         max_confs_seen = max(max_confs_seen, tick_confs)
-                    else:
-                        # STALL FALLBACK: If TXID indexing is slow, check direct balance
-                        try:
-                            check_bal = 0
-                            if currency == "ethereum":
-                                check_bal = await get_eth_balance_parallel(address)
-                            else:
-                                contract = USDT_POLYGON_CONTRACT if currency == "usdt_polygon" else USDT_BEP20_CONTRACT
-                                rpcs = POLYGON_RPC_URLS if currency == "usdt_polygon" else BEP20_RPC_URLS
-                                decs = USDT_POLYGON_DECIMALS if currency == "usdt_polygon" else USDT_BEP20_DECIMALS
-                                check_bal = await get_usdt_balance_parallel(contract, address, rpcs, decs)
-                            
-                            if check_bal >= (float(expected_amount) - 0.0001):
-                                print(f"[VERIFY] TXID indexing slow, but funds found via balance check. Proceeding.")
-                                tick_confs = 2
-                                max_confs_seen = 2
-                        except: pass
+                    
+                    # Track 2: Balance-based Heartbeat Fallback (Ensures money isn't lost if indexing lags)
+                    try:
+                        check_bal = 0
+                        if currency == "ethereum":
+                            check_bal = await get_eth_balance_parallel(address)
+                        else:
+                            contract = USDT_POLYGON_CONTRACT if currency == "usdt_polygon" else USDT_BEP20_CONTRACT
+                            rpcs = POLYGON_RPC_URLS if currency == "usdt_polygon" else BEP20_RPC_URLS
+                            decs = USDT_POLYGON_DECIMALS if currency == "usdt_polygon" else USDT_BEP20_DECIMALS
+                            check_bal = await get_usdt_balance_parallel(contract, address, rpcs, decs)
+                        
+                        if check_bal >= (float(expected_amount) - 0.0001):
+                            # If balance is full but TXID shows < 1, boost to 1 to show progress
+                            max_confs_seen = max(max_confs_seen, 1)
+                            # If balance is full and we've waited a bit, boost to 2
+                            if i > 5: # After ~15-20 seconds of confirmed balance, force verify
+                                 max_confs_seen = 2
+                    except Exception as bal_e:
+                        logger.debug(f"[Heartbeat] Balance fallback error: {bal_e}")
+
                 elif currency == "solana":
                     if current_txid:
                         tick_confs = await get_solana_confirmations(current_txid, SOLANA_RPC_URLS)
-                        logger.info(f"[VERIFY_SOL] TXID: {current_txid} | Confs: {tick_confs}")
                         max_confs_seen = max(max_confs_seen, tick_confs)
-                    else:
-                        # Solana fallback
-                        try:
-                            check_bal = await get_solana_balance_parallel(address)
-                            if check_bal >= (float(expected_amount) - 0.0001):
-                                tick_confs = 2
-                                max_confs_seen = 2
-                        except: pass
-                else:
-                    tick_confs = 2 # Catch-all
-                    max_confs_seen = 2
+                    
+                    # Solana Heartbeat Fallback
+                    try:
+                        check_bal = await get_solana_balance_parallel(address)
+                        if check_bal >= (float(expected_amount) - 0.0001):
+                            max_confs_seen = max(max_confs_seen, 1)
+                            if i > 5: max_confs_seen = 2
+                    except: pass
 
                 # Sync confs for UI
                 confs = max_confs_seen
@@ -8747,13 +8743,13 @@ async def get_evm_nonce_parallel(address, currency):
 
 async def get_evm_confirmations(tx_hash, rpc_urls=None):
     """
-    Robust parallel EVM confirmation checker.
+    Robust parallel EVM confirmation checker with Indexing-Lag protection.
     Queries all RPCs and returns the HIGHEST confirmation count found.
     """
     if not tx_hash or not rpc_urls: return 0
     from web3 import AsyncWeb3, AsyncHTTPProvider
+    import asyncio
     
-    # Ensure 0x prefix
     if isinstance(tx_hash, str) and not tx_hash.startswith("0x"):
         tx_hash = "0x" + tx_hash
 
@@ -8761,20 +8757,34 @@ async def get_evm_confirmations(tx_hash, rpc_urls=None):
         w3 = None
         try:
             w3 = AsyncWeb3(AsyncHTTPProvider(url, request_kwargs={"timeout": 6}))
+            
+            # 1. Try Receipt (Normal path)
             receipt = await w3.eth.get_transaction_receipt(tx_hash)
+            tx_block = None
+            
             if receipt:
                 tx_block = receipt.get('blockNumber')
-                if tx_block is not None:
-                    if isinstance(tx_block, str) and tx_block.startswith("0x"):
-                        tx_block = int(tx_block, 16)
-                    current_block = await w3.eth.block_number
-                    return max(0, current_block - tx_block + 1)
+            else:
+                # 2. Indexing Lag Fallback: Try get_transaction (often found earlier than receipt)
+                tx_data = await w3.eth.get_transaction(tx_hash)
+                if tx_data and tx_data.get('blockNumber'):
+                    tx_block = tx_data['blockNumber']
+            
+            if tx_block is not None:
+                if isinstance(tx_block, str) and tx_block.startswith("0x"):
+                    tx_block = int(tx_block, 16)
+                current_block = await w3.eth.block_number
+                confs = max(0, current_block - tx_block + 1)
+                return confs
+                
             return 0
-        except:
+        except Exception as e:
+            # Silently handle common RPC glitches
             return 0
         finally:
             if w3 is not None:
-                try: await w3.provider.session.close()
+                try: 
+                    await w3.provider.session.close()
                 except: pass
 
     tasks = [fetch_conf(url) for url in rpc_urls]
