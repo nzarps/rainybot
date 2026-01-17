@@ -36,7 +36,7 @@ RPC_URL = f"http://{RPC_USER}:{RPC_PASSWORD}@{RPC_HOST}:{RPC_PORT}"
 
 # ETH RPC
 ETH_RPC_URLS = [
-    url.strip() for url in os.getenv("ETH_RPC_URLS", "https://ethereum-rpc.publicnode.com,https://eth.llamarpc.com,https://1rpc.io/eth,https://rpc.ankr.com/eth").split(",")
+    url.strip() for url in os.getenv("ETH_RPC_URLS", "https://ethereum-rpc.publicnode.com,https://cloudflare-eth.com,https://rpc.flashbots.net,https://eth-mainnet.public.blastapi.io,https://eth.llamarpc.com,https://1rpc.io/eth").split(",")
 ]
 ETH_DECIMALS = 18
 

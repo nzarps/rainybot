@@ -3920,25 +3920,25 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
         # ======================
 
         try:
+            # Determine tolerance (max 1% or flat 0.0001)
+            tolerance = min(0.0001, expected_amount * 0.01) if expected_amount > 0 else 0.0001
+
             if currency == "ltc":
                 s = await api_get_status(address)
                 total = float(s["confirmed"] + s["unconfirmed"])
-                total = float(s["confirmed"] + s["unconfirmed"])
-                # FIX: Add tolerance for LTC too
-                is_confirmed = total >= (expected_amount - 0.0001)
+                is_confirmed = total >= (expected_amount - tolerance)
             elif currency == "usdt_bep20":
                 total = await get_usdt_balance_parallel(USDT_BEP20_CONTRACT, address, BEP20_RPC_URLS, USDT_BEP20_DECIMALS)
-                # Precision tolerance: 0.0001 or 1/100th of a cent
-                is_confirmed = total >= (expected_amount - 0.0001) 
+                is_confirmed = total >= (expected_amount - tolerance) 
             elif currency == "usdt_polygon":
                 total = await get_usdt_balance_parallel(USDT_POLYGON_CONTRACT, address, POLYGON_RPC_URLS, USDT_POLYGON_DECIMALS)
-                is_confirmed = total >= (expected_amount - 0.0001)
+                is_confirmed = total >= (expected_amount - tolerance)
             elif currency == "solana":
                 total = await get_solana_balance_parallel(address)
-                is_confirmed = total >= (expected_amount - 0.0001)
+                is_confirmed = total >= (expected_amount - tolerance)
             elif currency == "ethereum":
                 total = await get_eth_balance_parallel(address)
-                is_confirmed = total >= (expected_amount - 0.0001)
+                is_confirmed = total >= (expected_amount - tolerance)
             else:
                 total = 0
                 is_confirmed = False
@@ -4817,6 +4817,7 @@ async def handle_full_payment(
                     # Track 2: Balance-based Heartbeat Fallback (Ensures money isn't lost if indexing lags)
                     try:
                         check_bal = 0
+                        smart_tol = min(0.0001, float(expected_amount) * 0.01)
                         if currency == "ethereum":
                             check_bal = await get_eth_balance_parallel(address)
                         else:
@@ -4825,11 +4826,12 @@ async def handle_full_payment(
                             decs = USDT_POLYGON_DECIMALS if currency == "usdt_polygon" else USDT_BEP20_DECIMALS
                             check_bal = await get_usdt_balance_parallel(contract, address, rpcs, decs)
                         
-                        if check_bal >= (float(expected_amount) - 0.0001):
+                        # Only trigger if balance is POSITIVE and enough (prevents error-return-0 issues)
+                        if check_bal > 0 and check_bal >= (float(expected_amount) - smart_tol):
                             # If balance is full but TXID shows < 1, boost to 1 to show progress
                             max_confs_seen = max(max_confs_seen, 1)
                             # If balance is full and we've waited a bit, boost to 2
-                            if i > 5: # After ~15-20 seconds of confirmed balance, force verify
+                            if i > 5: # After ~20 seconds of confirmed balance, force verify
                                  max_confs_seen = 2
                     except Exception as bal_e:
                         logger.debug(f"[Heartbeat] Balance fallback error: {bal_e}")
