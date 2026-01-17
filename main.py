@@ -188,6 +188,15 @@ import time
 def dbg(msg):
     logger.debug(f"[LTC-DEBUG] {msg}")
 
+def format_crypto_amount(amount):
+    """Formats crypto amount to avoid scientific notation and show relevant decimals."""
+    if amount is None: return "0.0"
+    try:
+        # Avoid scientific notation for small amounts
+        return f"{float(amount):.8f}".rstrip('0').rstrip('.') or "0.0"
+    except:
+        return str(amount)
+
 def get_currency_info(currency):
     """Returns metadata (name, icon) for a given currency."""
     currency_data = {
@@ -4040,7 +4049,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
 
                         detect_embed = discord.Embed(
                             title="✨ Verifying Transaction",
-                            description=f"We've detected payment of **{total} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
+                            description=f"We've detected payment of **{format_crypto_amount(total)} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
                             color=0xffaa00
                         )
                         
@@ -4049,7 +4058,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                         else:
                             detect_embed.set_author(name="Payment Detected", icon_url="https://cdn.discordapp.com/emojis/1324706325112164404.gif")
 
-                        detect_embed.add_field(name="💰 Amount", value=f"`{total}`\n{currency_meta['name']}", inline=True)
+                        detect_embed.add_field(name="💰 Amount", value=f"`{format_crypto_amount(total)}` {currency_meta['name']}", inline=True)
                         detect_embed.add_field(name="💵 USD Value", value=f"`${usd_approx:.2f}`", inline=True)
                         detect_embed.add_field(name="🔄 Confirmations", value="`⏳ 0/2 Confirmations`", inline=False)
                         detect_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1438896774243942432/1446517314433454342/discotools-xyz-icon.png")
@@ -4144,7 +4153,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     
                     embed = discord.Embed(
                         title="⚠ Partial Payment Detected",
-                        description=f"Received: {total:.8f} {currency_display}\nExpected: {expected_amount:.8f} {currency_display}\n**Remaining:** {remaining_str} {currency_display}\n\nDo you want to continue by paying the rest, or cancel?",
+                        description=f"Received: {format_crypto_amount(total)} {currency_display}\nExpected: {format_crypto_amount(expected_amount)} {currency_display}\n**Remaining:** {remaining_str} {currency_display}\n\nDo you want to continue by paying the rest, or cancel?",
                         color=0xffaa00
                     )
                     
@@ -4229,7 +4238,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     
                     wait_embed = discord.Embed(
                         title="✨ Verifying Transaction",
-                        description=f"We've detected payment of **{total} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
+                        description=f"We've detected payment of **{format_crypto_amount(total)} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
                         color=0xffaa00 # Rain yellow
                     )
                     
@@ -4238,7 +4247,7 @@ async def check_payment_multicurrency(address, channel, expected_amount, deal_in
                     else:
                         wait_embed.set_author(name="Payment Detected", icon_url="https://cdn.discordapp.com/emojis/1324706325112164404.gif")
 
-                    wait_embed.add_field(name="💰 Amount", value=f"{total}\n{currency_meta['name']}", inline=True)
+                    wait_embed.add_field(name="💰 Amount", value=f"`{format_crypto_amount(total)}` {currency_meta['name']}", inline=True)
                     wait_embed.add_field(name="💵 USD Value", value=f"${usd_val:.2f}", inline=True)
                     wait_embed.add_field(name="🔄 Confirmations", value="⏳ 0/2 Confirmations", inline=False)
                     
@@ -4738,7 +4747,7 @@ async def handle_full_payment(
             else:
                 wait_embed.set_author(name="✨ Verifying Transaction", icon_url="https://cdn.discordapp.com/emojis/1324706325112164404.gif")
 
-            wait_embed.add_field(name="💰 Amount", value=f"`{received_amount}`\n{currency_meta['name']}", inline=True)
+            wait_embed.add_field(name="💰 Amount", value=f"`{format_crypto_amount(received_amount)}` {currency_meta['name']}", inline=True)
             wait_embed.add_field(name="💵 USD Value", value=f"`${usd_val:.2f}`", inline=True)
             wait_embed.add_field(name="🔄 Confirmations", value="`⏳ 0/2 Confirmations`", inline=False)
             wait_embed.set_thumbnail(url="https://cdn.discordapp.com/attachments/1438896774243942432/1446517314433454342/discotools-xyz-icon.png")
@@ -4801,6 +4810,7 @@ async def handle_full_payment(
                     if res is not None:
                         tick_confs = res
                         max_confs_seen = max(max_confs_seen, tick_confs)
+                        logger.info(f"[VERIFY_LOOP] LTC Confs: {tick_confs} | Max: {max_confs_seen}")
                 
                 elif currency in ["usdt_polygon", "usdt_bep20", "ethereum"]:
                     # DUAL-TRACK: We check BOTH TXID and Balance simultaneously for maximum reliability
@@ -4813,6 +4823,8 @@ async def handle_full_payment(
                     if current_txid:
                         tick_confs = await get_evm_confirmations(current_txid, rpcs)
                         max_confs_seen = max(max_confs_seen, tick_confs)
+                        if tick_confs > 0:
+                            logger.info(f"[VERIFY_LOOP] EVM {currency} Confs: {tick_confs} | Max: {max_confs_seen}")
                     
                     # Track 2: Balance-based Heartbeat Fallback (Ensures money isn't lost if indexing lags)
                     try:
@@ -4829,10 +4841,14 @@ async def handle_full_payment(
                         # Only trigger if balance is POSITIVE and enough (prevents error-return-0 issues)
                         if check_bal > 0 and check_bal >= (float(expected_amount) - smart_tol):
                             # If balance is full but TXID shows < 1, boost to 1 to show progress
-                            max_confs_seen = max(max_confs_seen, 1)
+                            if max_confs_seen < 1:
+                                max_confs_seen = 1
+                                logger.info(f"[VERIFY_LOOP] {currency} Balance found ({check_bal}). Boosting confs to 1.")
+                            
                             # If balance is full and we've waited a bit, boost to 2
-                            if i > 5: # After ~20 seconds of confirmed balance, force verify
+                            if i > 5 and max_confs_seen < 2: 
                                  max_confs_seen = 2
+                                 logger.info(f"[VERIFY_LOOP] {currency} Balance persistent. Force verifying (Pulse 2).")
                     except Exception as bal_e:
                         logger.debug(f"[Heartbeat] Balance fallback error: {bal_e}")
 
@@ -8743,57 +8759,9 @@ async def get_evm_nonce_parallel(address, currency):
     return 0
 
 
-async def get_evm_confirmations(tx_hash, rpc_urls=None):
-    """
-    Robust parallel EVM confirmation checker with Indexing-Lag protection.
-    Queries all RPCs and returns the HIGHEST confirmation count found.
-    """
-    if not tx_hash or not rpc_urls: return 0
-    from web3 import AsyncWeb3, AsyncHTTPProvider
-    import asyncio
-    
-    if isinstance(tx_hash, str) and not tx_hash.startswith("0x"):
-        tx_hash = "0x" + tx_hash
-
-    async def fetch_conf(url):
-        w3 = None
-        try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(url, request_kwargs={"timeout": 6}))
-            
-            # 1. Try Receipt (Normal path)
-            receipt = await w3.eth.get_transaction_receipt(tx_hash)
-            tx_block = None
-            
-            if receipt:
-                tx_block = receipt.get('blockNumber')
-            else:
-                # 2. Indexing Lag Fallback: Try get_transaction (often found earlier than receipt)
-                tx_data = await w3.eth.get_transaction(tx_hash)
-                if tx_data and tx_data.get('blockNumber'):
-                    tx_block = tx_data['blockNumber']
-            
-            if tx_block is not None:
-                if isinstance(tx_block, str) and tx_block.startswith("0x"):
-                    tx_block = int(tx_block, 16)
-                current_block = await w3.eth.block_number
-                confs = max(0, current_block - tx_block + 1)
-                return confs
-                
-            return 0
-        except Exception as e:
-            # Silently handle common RPC glitches
-            return 0
-        finally:
-            if w3 is not None:
-                try: 
-                    await w3.provider.session.close()
-                except: pass
-
-    tasks = [fetch_conf(url) for url in rpc_urls]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    valid_results = [r for r in results if isinstance(r, int)]
-    return max(valid_results) if valid_results else 0
+# REDUNDANT LOCAL DEFINITION REMOVED - NOW USING STANDARDIZED VERSION IN utils.confirmation_utils
+# async def get_evm_confirmations(tx_hash, rpc_urls=None):
+#    ...
 
 
 
