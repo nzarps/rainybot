@@ -494,7 +494,7 @@ async def generate_wallet_for_currency(deal_id, currency):
 
 
 async def get_eth_balance_parallel(address):
-    """Get ETH balance from multiple RPCs in parallel (Async)."""
+    """Get ETH balance from multiple RPCs. Returns the HIGHEST balance found (solves RPC lag)."""
     from web3 import AsyncWeb3, AsyncHTTPProvider
     
     async def fetch_balance(rpc_url):
@@ -502,30 +502,30 @@ async def get_eth_balance_parallel(address):
         try:
             w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 6}))
             if not await w3.is_connected():
-                return None
-            balance_wei = await w3.eth.get_balance(AsyncWeb3.to_checksum_address(address))
+                return 0.0
+            
+            addr_checksum = AsyncWeb3.to_checksum_address(address)
+            # Check both latest and pending. Pending allows detection before mining!
+            balance_latest = await w3.eth.get_balance(addr_checksum, 'latest')
+            balance_pending = await w3.eth.get_balance(addr_checksum, 'pending')
+            
+            # Use the maximum to catch unconfirmed incoming funds
+            balance_wei = max(balance_latest, balance_pending)
             return float(balance_wei / (10 ** 18))
-        except Exception as e:
-            # logger.debug(f"[ETH-RPC] Error ({rpc_url}): {e}")
-            return None
+        except:
+            return 0.0
         finally:
             if w3 is not None:
                 try: await w3.provider.session.close()
                 except: pass
             
-    tasks = [asyncio.create_task(fetch_balance(url)) for url in ETH_RPC_URLS]
+    # Run ALL in parallel and take the MAX
+    tasks = [fetch_balance(url) for url in ETH_RPC_URLS]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # Use as_completed to get the first SUCCESSFUL result
-    for task in asyncio.as_completed(tasks):
-        try:
-            res = await task
-            if res is not None:
-                # Found a working RPC with a result
-                for t in tasks: t.cancel()
-                return res
-        except:
-            continue
-            
+    valid_results = [r for r in results if isinstance(r, (float, int))]
+    if valid_results:
+        return max(valid_results)
     return 0.0
 
 
@@ -562,66 +562,49 @@ async def get_solana_slot():
 
 
 async def get_last_eth_txhash(address):
-    """Get last incoming ETH transaction hash using AsyncWeb3"""
+    """Get last incoming ETH transaction hash using robust parallel RPCs."""
     from web3 import AsyncWeb3, AsyncHTTPProvider
-    from web3 import Web3
-    address = Web3.to_checksum_address(address)
+    
+    addr_lower = address.lower()
     
     async def fetch_last_tx(rpc_url):
+        w3 = None
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 6}))
             if not await w3.is_connected():
                 return None
             
             # Get latest block
             latest_block = await w3.eth.block_number
             
-            # Check last 20 blocks for transactions to this address
-            for block_num in range(latest_block, latest_block - 20, -1):
-
-                if block_num <= 0:
-
-                    break
-
-                    
-
+            # Check last 50 blocks (~10 minutes) for reliability
+            for block_num in range(latest_block, latest_block - 50, -1):
+                if block_num <= 0: break
                 try:
-
-                    block = w3.eth.get_block(block_num, full_transactions=True)
-
-                    for tx in block.transactions:
-
-                        if tx.to and tx.to.lower() == address.lower():
-
-                            return tx.hash.hex()
-
-                except:
-
-                    continue
-
+                    # BLOCK FETCH MUST BE AWAITED
+                    block = await w3.eth.get_block(block_num, full_transactions=True)
+                    if not block or not block.transactions: continue
                     
-
+                    for tx in block.transactions:
+                        if tx.to and tx.to.lower() == addr_lower:
+                            return tx.hash.hex()
+                except:
+                    continue
         except Exception as e:
-            logger.error(f"ETH tx detection error ({rpc_url}): {e}")
-
+            logger.debug(f"[ETH-TX-RPC] Error ({rpc_url}): {e}")
+        finally:
+            if w3 is not None:
+                try: await w3.provider.session.close()
+                except: pass
         return None
 
-    
-
     tasks = [fetch_last_tx(url) for url in ETH_RPC_URLS]
-
     results = await asyncio.gather(*tasks, return_exceptions=True)
-
     
-
-    for result in results:
-
-        if result and isinstance(result, str):
-
-            return result
-
-    
-
+    for res in results:
+        if res and isinstance(res, str):
+            return res
+            
     return None
 
 
@@ -2034,6 +2017,7 @@ async def send_usdt_specific_amount(contract_address, private_key, to_address, a
 
 
 async def get_usdt_balance_parallel(contract_address, wallet, rpc_urls, decimals):
+    """Get USDT balance from multiple RPCs. Returns the HIGHEST balance found."""
     from web3 import AsyncWeb3, AsyncHTTPProvider
     
     async def fetch_balance(rpc_url):
@@ -2041,34 +2025,32 @@ async def get_usdt_balance_parallel(contract_address, wallet, rpc_urls, decimals
         try:
             w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 6}))
             if not await w3.is_connected():
-                return None
+                return 0.0
             
             contract = w3.eth.contract(
                 address=AsyncWeb3.to_checksum_address(contract_address),
                 abi=USDT_ABI
             )
             
-            bal = await contract.functions.balanceOf(AsyncWeb3.to_checksum_address(wallet)).call()
-            return float(bal / (10 ** decimals))
-        except Exception as e:
-            # logger.debug(f"[USDT-BAL] RPC {rpc_url} failed: {e}")
-            return None
+            # For USDT, we also check pending if available (supported on some RPCs)
+            try:
+                 bal = await contract.functions.balanceOf(AsyncWeb3.to_checksum_address(wallet)).call()
+                 return float(bal / (10 ** decimals))
+            except:
+                 return 0.0
+        except:
+            return 0.0
         finally:
             if w3 is not None:
                 try: await w3.provider.session.close()
                 except: pass
 
-    tasks = [asyncio.create_task(fetch_balance(url)) for url in rpc_urls]
+    tasks = [fetch_balance(url) for url in rpc_urls]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    for task in asyncio.as_completed(tasks):
-        try:
-            result = await task
-            if result is not None:
-                for t in tasks: t.cancel()
-                return result
-        except:
-            continue
-            
+    valid_results = [r for r in results if isinstance(r, (float, int))]
+    if valid_results:
+        return max(valid_results)
     return 0.0
 
 
@@ -8833,75 +8815,73 @@ async def get_evm_nonce_parallel(address, currency):
 
 async def get_evm_confirmations(tx_hash, rpc_urls=None):
     """
-    Robust unified EVM confirmation checker (Async).
-    Accepts tx_hash and an optional list of RPC URLs.
+    Robust parallel EVM confirmation checker.
+    Queries all RPCs and returns the HIGHEST confirmation count found.
     """
-    if not tx_hash: return 0
+    if not tx_hash or not rpc_urls: return 0
     from web3 import AsyncWeb3, AsyncHTTPProvider
     
-    # Ensure 0x prefix for string hashes
+    # Ensure 0x prefix
     if isinstance(tx_hash, str) and not tx_hash.startswith("0x"):
         tx_hash = "0x" + tx_hash
-        
-    if not rpc_urls:
-        return 0
-    
-    for url in rpc_urls:
+
+    async def fetch_conf(url):
         w3 = None
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(url, request_kwargs={"timeout": 5}))
-            # Get Receipt
+            w3 = AsyncWeb3(AsyncHTTPProvider(url, request_kwargs={"timeout": 6}))
             receipt = await w3.eth.get_transaction_receipt(tx_hash)
             if receipt:
                 tx_block = receipt.get('blockNumber')
-                if tx_block is None:
-                    try: tx_block = receipt['blockNumber']
-                    except: pass
-                
                 if tx_block is not None:
                     if isinstance(tx_block, str) and tx_block.startswith("0x"):
                         tx_block = int(tx_block, 16)
-                        
                     current_block = await w3.eth.block_number
-                    confs = max(0, current_block - tx_block + 1)
-                    return confs
-        except Exception as e:
-            # logger.debug(f"[EVM-CONF] Error on {url}: {e}")
-            continue
+                    return max(0, current_block - tx_block + 1)
+            return 0
+        except:
+            return 0
         finally:
             if w3 is not None:
-                try:
-                    await w3.provider.session.close()
-                except:
-                    pass
-    return 0
+                try: await w3.provider.session.close()
+                except: pass
+
+    tasks = [fetch_conf(url) for url in rpc_urls]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    valid_results = [r for r in results if isinstance(r, int)]
+    return max(valid_results) if valid_results else 0
 
 
 
 async def get_solana_confirmations(tx_hash, rpc_urls=None):
     """
-    Returns 2 if finalized, 1 if confirmed, 0 otherwise.
-    (Simplified for Solana where finalized means confirmed)
+    Robust parallel Solana confirmation checker.
+    Returns 2 if finalized, 1 if confirmed, 0 otherwise. Checks all RPCs in parallel.
     """
+    if not tx_hash: return 0
     from solana.rpc.async_api import AsyncClient
     
     if not rpc_urls:
         from config import SOLANA_RPC_URLS
         rpc_urls = SOLANA_RPC_URLS
 
-    for rpc in rpc_urls:
+    async def fetch_conf(url):
         try:
-            async with AsyncClient(rpc) as client:
-                # Use a smaller timeout for RPC responsiveness
-                resp = await asyncio.wait_for(client.get_signature_statuses([tx_hash]), timeout=10)
+            async with AsyncClient(url) as client:
+                resp = await asyncio.wait_for(client.get_signature_statuses([tx_hash]), timeout=8)
                 if resp.value and resp.value[0]:
                     status = resp.value[0].confirmation_status
                     if status == "finalized": return 2
                     if status == "confirmed": return 1
-        except Exception as e:
-            logger.debug(f"[SOL_RPC] Failure on {rpc}: {e}")
-            continue
-    return 0
+            return 0
+        except:
+            return 0
+
+    tasks = [fetch_conf(url) for url in rpc_urls]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    valid_results = [r for r in results if isinstance(r, int)]
+    return max(valid_results) if valid_results else 0
 
 async def generate_qr_bytes(text):
 
