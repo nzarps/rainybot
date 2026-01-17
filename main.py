@@ -618,6 +618,63 @@ async def get_last_eth_txhash(address):
 
 
 
+async def check_eth_balance_sufficient(address, amount_eth=None, rpc_urls=None):
+    """
+    Check if an address has sufficient ETH balance to send a transaction.
+    Returns (is_sufficient, balance, required, error_message)
+    """
+    from web3 import AsyncWeb3, AsyncHTTPProvider
+    
+    if rpc_urls is None:
+        rpc_urls = ETH_RPC_URLS
+    
+    for rpc in rpc_urls:
+        w3 = None
+        try:
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs={"timeout": 5}))
+            if not await w3.is_connected():
+                continue
+            
+            checksum_addr = AsyncWeb3.to_checksum_address(address)
+            balance = await w3.eth.get_balance(checksum_addr)
+            
+            # Estimate gas cost
+            gas_limit = 21000
+            gas_price = await w3.eth.gas_price
+            fast_gas_price = int(gas_price * 1.5)
+            gas_cost = gas_limit * fast_gas_price
+            
+            if amount_eth is None:
+                # For sweep operations, just need to cover gas
+                required = gas_cost
+                send_amount = balance - gas_cost
+            else:
+                send_amount = int(amount_eth * (10**18))
+                required = send_amount + gas_cost
+            
+            balance_eth = balance / (10**18)
+            required_eth = required / (10**18)
+            gas_cost_eth = gas_cost / (10**18)
+            
+            if balance < required:
+                error_msg = f"Insufficient ETH: Have {balance_eth:.8f} ETH, Need {required_eth:.8f} ETH (gas: {gas_cost_eth:.8f} ETH)"
+                return False, balance_eth, required_eth, error_msg
+            
+            return True, balance_eth, required_eth, None
+            
+        except Exception as e:
+            continue
+        finally:
+            if w3 is not None:
+                try:
+                    await w3.provider.session.close()
+                except:
+                    pass
+    
+    return False, 0, 0, "Unable to connect to any ETH RPC"
+
+
+
 async def send_eth(private_key, to_address, amount=None, nonce=None):
     """Sends ETH using AsyncWeb3 (Supports manual nonce & Detailed logging)."""
     from eth_account import Account
@@ -631,6 +688,7 @@ async def send_eth(private_key, to_address, amount=None, nonce=None):
     rpc_urls = ETH_RPC_URLS
 
     for rpc in rpc_urls:
+        w3 = None
         try:
             w3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs={"timeout": 10}))
             if not await w3.is_connected():
@@ -657,14 +715,22 @@ async def send_eth(private_key, to_address, amount=None, nonce=None):
             else:
                 send_amount = int(amount * (10**18))
 
+            # Enhanced error messages with ETH conversion
             if send_amount <= 0:
-                last_error = f"Insufficient funds to cover gas: Balance {balance} < Cost {gas_cost}"
-                logger.info(f"[ETH] {last_error}")
+                balance_eth = balance / (10**18)
+                gas_cost_eth = gas_cost / (10**18)
+                last_error = f"Insufficient ETH balance: {balance} wei ({balance_eth:.8f} ETH) < {gas_cost} wei ({gas_cost_eth:.8f} ETH) gas cost"
+                logger.error(f"[ETH] {last_error}")
                 continue
 
             if balance < (send_amount + gas_cost):
-                last_error = f"Insufficient balance on {rpc}: {balance} < {send_amount} + {gas_cost}"
-                logger.info(f"[ETH] {last_error}")
+                balance_eth = balance / (10**18)
+                required = send_amount + gas_cost
+                required_eth = required / (10**18)
+                send_amount_eth = send_amount / (10**18)
+                gas_cost_eth = gas_cost / (10**18)
+                last_error = f"Insufficient ETH balance: {balance} < {required} (Balance: {balance_eth:.8f} ETH, Need: {required_eth:.8f} ETH = {send_amount_eth:.8f} amount + {gas_cost_eth:.8f} gas)"
+                logger.error(f"[ETH] {last_error}")
                 continue
 
             tx = {
@@ -689,8 +755,15 @@ async def send_eth(private_key, to_address, amount=None, nonce=None):
 
         except Exception as e:
             last_error = f"RPC {rpc} general error: {e}"
-            logger.info(f"[ETH] {last_error}")
+            logger.error(f"[ETH] {last_error}")
             continue
+        finally:
+            # Ensure provider session is closed to prevent warnings
+            if w3 is not None:
+                try:
+                    await w3.provider.session.close()
+                except:
+                    pass
 
     raise Exception(f"ETH Withdrawal Failed: {last_error}")
 
@@ -1190,6 +1263,7 @@ async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls,
     last_error = "No RPC connected"
 
     for rpc in rpc_urls:
+        w3 = None
         try:
             w3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs={"timeout": 10}))
             if not await w3.is_connected():
@@ -1253,6 +1327,13 @@ async def send_usdt(contract_address, private_key, to_address, amount, rpc_urls,
             last_error = f"RPC {rpc} general error: {e}"
             logger.info(f"[EVM] {last_error}")
             continue
+        finally:
+            # Ensure provider session is closed to prevent warnings
+            if w3 is not None:
+                try:
+                    await w3.provider.session.close()
+                except:
+                    pass
 
     raise Exception(f"Withdrawal Failed: {last_error}")
 
@@ -1671,10 +1752,13 @@ async def send_funds_based_on_currency(deal_info, to_address, amount=None, statu
 
     elif currency == 'ethereum':
 
-        if amount is None:
-
-            amount = deal_info.get('ltc_amount')
-
+        # For ETH, if amount is None, we want to sweep all (send_eth will handle gas deduction)
+        # Don't set amount to ltc_amount as that doesn't account for gas properly
+        if amount is not None:
+            # Only use the specified amount if explicitly provided
+            pass  # amount is already set
+        # If amount is None, keep it None so send_eth sweeps: balance - gas
+        
         return await send_eth(private_key, to_address, amount, nonce=nonce)
 
     
@@ -4749,6 +4833,8 @@ async def handle_full_payment(
                     res_tx = await fetch_txid_ultimate(address, currency, max_attempts=1)
                     if res_tx:
                         current_txid = res_tx[0] if isinstance(res_tx, list) else res_tx
+                        # [FIX] Sync tx_hash so it's available for the final ReleaseButton panel
+                        tx_hash = current_txid 
                     if current_txid:
                         explorer_url = get_explorer_url(currency, current_txid)
                 
@@ -8680,31 +8766,6 @@ async def is_valid_ltc_address(address: str) -> bool:
 
 
 
-def get_explorer_url(currency: str, tx_hash: str) -> str:
-
-    """Get blockchain explorer URL for transaction"""
-
-    if currency == 'ltc':
-
-        return f"https://live.blockcypher.com/ltc/tx/{tx_hash}/"
-
-    elif currency == 'usdt_bep20':
-
-        return f"https://bscscan.com/tx/0x{tx_hash}"
-
-    elif currency == 'usdt_polygon':
-
-        return f"https://polygonscan.com/tx/0x{tx_hash}"
-
-    elif currency == 'solana':
-
-        return f"https://solscan.io/tx/{tx_hash}"
-
-    elif currency == 'ethereum':
-
-        return f"https://etherscan.io/tx/0x{tx_hash}"
-
-    return "#"
 
 
 
@@ -8735,9 +8796,11 @@ async def get_evm_nonce_parallel(address, currency):
     return 0
 
 
-async def get_evm_confirmations(tx_hash, currency):
-
-    """Robust unified EVM confirmation checker (Async)."""
+async def get_evm_confirmations(tx_hash, rpc_urls=None):
+    """
+    Robust unified EVM confirmation checker (Async).
+    Accepts tx_hash and an optional list of RPC URLs.
+    """
     if not tx_hash: return 0
     from web3 import AsyncWeb3, AsyncHTTPProvider
     
@@ -8745,29 +8808,22 @@ async def get_evm_confirmations(tx_hash, currency):
     if isinstance(tx_hash, str) and not tx_hash.startswith("0x"):
         tx_hash = "0x" + tx_hash
         
-    rpc_urls = {
-        "ethereum": ETH_RPC_URLS,
-        "usdt_polygon": POLYGON_RPC_URLS,
-        "usdt_bep20": BEP20_RPC_URLS
-    }.get(currency, [])
-    
-    if not rpc_urls: return 0
+    if not rpc_urls:
+        return 0
     
     for url in rpc_urls:
+        w3 = None
         try:
             w3 = AsyncWeb3(AsyncHTTPProvider(url, request_kwargs={"timeout": 5}))
             # Get Receipt
             receipt = await w3.eth.get_transaction_receipt(tx_hash)
             if receipt:
-                # Map various possible key names
                 tx_block = receipt.get('blockNumber')
                 if tx_block is None:
-                    # Fallback to key access if .get fails on some implementations
                     try: tx_block = receipt['blockNumber']
                     except: pass
                 
                 if tx_block is not None:
-                    # Handle potential hex strings from some RPCs
                     if isinstance(tx_block, str) and tx_block.startswith("0x"):
                         tx_block = int(tx_block, 16)
                         
@@ -8777,25 +8833,39 @@ async def get_evm_confirmations(tx_hash, currency):
         except Exception as e:
             # logger.debug(f"[EVM-CONF] Error on {url}: {e}")
             continue
+        finally:
+            if w3 is not None:
+                try:
+                    await w3.provider.session.close()
+                except:
+                    pass
     return 0
 
 
 
-async def get_solana_confirmations(tx_hash):
+async def get_solana_confirmations(tx_hash, rpc_urls=None):
     """
     Returns 2 if finalized, 1 if confirmed, 0 otherwise.
     (Simplified for Solana where finalized means confirmed)
     """
-    try:
-        from solana.rpc.async_api import AsyncClient
-        async with AsyncClient(SOLANA_RPC_URL) as client:
-            resp = await client.get_signature_statuses([tx_hash])
-            if resp.value and resp.value[0]:
-                status = resp.value[0].confirmation_status
-                if status == "finalized": return 2
-                if status == "confirmed": return 1
-    except:
-        pass
+    from solana.rpc.async_api import AsyncClient
+    
+    if not rpc_urls:
+        from config import SOLANA_RPC_URLS
+        rpc_urls = SOLANA_RPC_URLS
+
+    for rpc in rpc_urls:
+        try:
+            async with AsyncClient(rpc) as client:
+                # Use a smaller timeout for RPC responsiveness
+                resp = await asyncio.wait_for(client.get_signature_statuses([tx_hash]), timeout=10)
+                if resp.value and resp.value[0]:
+                    status = resp.value[0].confirmation_status
+                    if status == "finalized": return 2
+                    if status == "confirmed": return 1
+        except Exception as e:
+            logger.debug(f"[SOL_RPC] Failure on {rpc}: {e}")
+            continue
     return 0
 
 async def generate_qr_bytes(text):
