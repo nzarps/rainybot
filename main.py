@@ -4711,6 +4711,8 @@ async def handle_full_payment(
         v_wait = discord.ui.View(timeout=None)
         button_added = False
         explorer_url = None
+        confs = 0
+        max_confs_seen = 0
         
         # Multiple Buttons for Multi-Payment Support
         seen_txids = deal_info.get("_seen_txids", [])
@@ -4785,7 +4787,6 @@ async def handle_full_payment(
                 try: await msg.edit(embed=wait_embed, view=v_wait)
                 except: pass
         
-        max_confs_seen = 0
         last_ui_confs = -1  # Track last UI update to avoid redundant edits
         for i in range(240): # Max 12 mins (240 * 3s = 720s)
             try:
