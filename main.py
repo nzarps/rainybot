@@ -3563,6 +3563,11 @@ async def auto_fund_gas(address, currency, needed_amount):
         from crypto_utils import send_native_chain_generic
         
         logger.info(f"[AutoGas] Funding {needed_amount} native to {address} for {currency}...")
+        # [DEBUG] Log the source address to help client find the right wallet
+        from eth_account import Account
+        source_acct = Account.from_key(gas_key)
+        logger.info(f"[AutoGas] FUNDING SOURCE: {source_acct.address}")
+        
         txid = await send_native_chain_generic(
             gas_key,
             address,
