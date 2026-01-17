@@ -4710,6 +4710,7 @@ async def handle_full_payment(
         # PREPARE PREMIUM WAIT EMBED
         v_wait = discord.ui.View(timeout=None)
         button_added = False
+        explorer_url = None
         
         # Multiple Buttons for Multi-Payment Support
         seen_txids = deal_info.get("_seen_txids", [])
@@ -4741,7 +4742,7 @@ async def handle_full_payment(
             currency_meta = get_currency_info(currency)
             wait_embed = discord.Embed(
                 title="Payment Detected",
-                description=f"We've detected payment of **{received_amount} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
+                description=f"We've detected payment of **{format_crypto_amount(received_amount)} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
                 color=0xffaa00
             )
             if currency_meta['icon']:
@@ -4765,7 +4766,7 @@ async def handle_full_payment(
             # Recreate the correct embed structure
             wait_embed = discord.Embed(
                 title="Payment Detected",
-                description=f"We've detected payment of **{received_amount} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
+                description=f"We've detected payment of **{format_crypto_amount(received_amount)} {currency_meta['name']}**. \nWaiting for on-chain confirmation before proceeding.",
                 color=0xffaa00
             )
             if currency_meta['icon']:
@@ -4799,6 +4800,9 @@ async def handle_full_payment(
                         explorer_url = get_explorer_url(currency, current_txid)
                 
                 # 2. Add Button once TXID is found
+                if current_txid and not explorer_url:
+                    explorer_url = get_explorer_url(currency, current_txid)
+
                 if current_txid and explorer_url and not button_added:
                     v_wait.add_item(discord.ui.Button(label="View on Blockchain", url=explorer_url))
                     button_added = True
