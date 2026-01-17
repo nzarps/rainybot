@@ -498,25 +498,33 @@ async def get_eth_balance_parallel(address):
     from web3 import AsyncWeb3, AsyncHTTPProvider
     
     async def fetch_balance(rpc_url):
+        w3 = None
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 6}))
             if not await w3.is_connected():
                 return None
-            balance_wei = await w3.eth.get_balance(w3.to_checksum_address(address))
+            balance_wei = await w3.eth.get_balance(AsyncWeb3.to_checksum_address(address))
             return float(balance_wei / (10 ** 18))
         except Exception as e:
             # logger.debug(f"[ETH-RPC] Error ({rpc_url}): {e}")
             return None
+        finally:
+            if w3 is not None:
+                try: await w3.provider.session.close()
+                except: pass
             
     tasks = [asyncio.create_task(fetch_balance(url)) for url in ETH_RPC_URLS]
-    done, pending = await asyncio.wait(tasks, timeout=6, return_when=asyncio.FIRST_COMPLETED)
     
-    for t in done:
-        res = t.result()
-        if res is not None:
-            for p in pending: p.cancel()
-            # logger.info(f"[ETH-BALANCE] Address {address[:10]}... = {res} ETH")
-            return res
+    # Use as_completed to get the first SUCCESSFUL result
+    for task in asyncio.as_completed(tasks):
+        try:
+            res = await task
+            if res is not None:
+                # Found a working RPC with a result
+                for t in tasks: t.cancel()
+                return res
+        except:
+            continue
             
     return 0.0
 
@@ -1792,13 +1800,16 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     private_key = deal_info.get('private_key')
     deal_id = deal_info.get('deal_id')
     
+    is_sweep = amount is None
     if amount is None:
         amount = deal_info.get('ltc_amount', 0)
     
     # Check if fees were already deducted for this deal (prevents double fee on restart)
     if deal_info.get('fee_deducted', False):
         logger.info(f"[FEE] Fee already deducted for deal {deal_id}, skipping fee deduction")
-        main_tx = await send_funds_based_on_currency(deal_info, to_address, None, status_msg=status_msg)
+        # For ETH sweep, pass None to send_funds_based_on_currency
+        final_amount = None if (is_sweep and currency == 'ethereum') else amount
+        main_tx = await send_funds_based_on_currency(deal_info, to_address, final_amount, status_msg=status_msg)
         return {
             'main_tx': main_tx,
             'fee_tx': None,
@@ -1809,7 +1820,9 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     
     # Check if we should deduct fees
     if not should_deduct_fee(currency):
-        main_tx = await send_funds_based_on_currency(deal_info, to_address, amount, status_msg=status_msg)
+        # For ETH sweep, pass None to send_funds_based_on_currency
+        final_amount = None if (is_sweep and currency == 'ethereum') else amount
+        main_tx = await send_funds_based_on_currency(deal_info, to_address, final_amount, status_msg=status_msg)
         return {
             'main_tx': main_tx,
             'fee_tx': None,
@@ -1908,7 +1921,9 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     except Exception as e:
         logger.info(f"[FEE] Error sending fee: {e}")
         # If fee fails, try sending full amount (no fee)
-        main_tx = await send_funds_based_on_currency(deal_info, to_address, amount, status_msg=status_msg)
+        # Use sweep mode for ETH if it was a full withdrawal
+        final_amount = None if (is_sweep and currency == 'ethereum') else amount
+        main_tx = await send_funds_based_on_currency(deal_info, to_address, final_amount, status_msg=status_msg)
         return {
             'main_tx': main_tx,
             'fee_tx': None,
@@ -1929,7 +1944,9 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     
     # Send main funds
     print(f"[FEE] Sending remaining amount: {remaining_amount:.8f} {currency}")
-    main_tx = await send_funds_based_on_currency(deal_info, to_address, remaining_amount, status_msg=status_msg, nonce=current_nonce)
+    # For ETH sweep, pass None to sweep the remainder (balance - gas)
+    final_amount = None if (is_sweep and currency == 'ethereum') else remaining_amount
+    main_tx = await send_funds_based_on_currency(deal_info, to_address, final_amount, status_msg=status_msg, nonce=current_nonce)
     
     return {
         'main_tx': main_tx,
@@ -2020,30 +2037,37 @@ async def get_usdt_balance_parallel(contract_address, wallet, rpc_urls, decimals
     from web3 import AsyncWeb3, AsyncHTTPProvider
     
     async def fetch_balance(rpc_url):
+        w3 = None
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 6}))
             if not await w3.is_connected():
                 return None
             
             contract = w3.eth.contract(
-                address=w3.to_checksum_address(contract_address),
+                address=AsyncWeb3.to_checksum_address(contract_address),
                 abi=USDT_ABI
             )
             
-            bal = await contract.functions.balanceOf(w3.to_checksum_address(wallet)).call()
+            bal = await contract.functions.balanceOf(AsyncWeb3.to_checksum_address(wallet)).call()
             return float(bal / (10 ** decimals))
         except Exception as e:
             # logger.debug(f"[USDT-BAL] RPC {rpc_url} failed: {e}")
             return None
+        finally:
+            if w3 is not None:
+                try: await w3.provider.session.close()
+                except: pass
 
     tasks = [asyncio.create_task(fetch_balance(url)) for url in rpc_urls]
-    done, pending = await asyncio.wait(tasks, timeout=6, return_when=asyncio.FIRST_COMPLETED)
     
-    for t in done:
-        result = t.result()
-        if result is not None:
-            for p in pending: p.cancel()
-            return result
+    for task in asyncio.as_completed(tasks):
+        try:
+            result = await task
+            if result is not None:
+                for t in tasks: t.cancel()
+                return result
+        except:
+            continue
             
     return 0.0
 
@@ -2109,19 +2133,25 @@ async def get_solana_transactions(address):
                 "method": "getSignaturesForAddress",
                 "params": [address, {"limit": 10}]
             }
-            async with session.post(rpc_url, json=payload, timeout=5) as resp:
+            async with session.post(rpc_url, json=payload, timeout=6) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return data.get('result', [])
+                    res = data.get('result', [])
+                    return res if res else None # Return None if empty to keep looking
         except: pass
         return None
 
     tasks = [asyncio.create_task(fetch_transactions(url)) for url in SOLANA_RPC_URLS]
-    done, pending = await asyncio.wait(tasks, timeout=5, return_when=asyncio.FIRST_COMPLETED)
-    for t in done:
-        if t.result():
-            for p in pending: p.cancel()
-            return t.result()
+    
+    for task in asyncio.as_completed(tasks):
+        try:
+            result = await task
+            if result:
+                for t in tasks: t.cancel()
+                return result
+        except:
+            continue
+            
     return []
 
 
@@ -3306,15 +3336,16 @@ async def polygon_tatum_rpc(method, params):
 
 async def get_usdt_polygon_txid_tatum(address):
     """Fetch USDT Polygon TXID using parallel RPC calls (fastest response wins)."""
-    from web3 import Web3
+    from web3 import AsyncWeb3, AsyncHTTPProvider
     import asyncio
     
     address_bare = address.lower().replace("0x", "")
     padded_address = "0x" + address_bare.zfill(64)
     
     async def try_rpc(rpc_url):
+        w3 = None
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 6}))
             if not await w3.is_connected():
                 return None
             
@@ -3324,7 +3355,7 @@ async def get_usdt_polygon_txid_tatum(address):
             logs = await w3.eth.get_logs({
                 "fromBlock": start_block,
                 "toBlock": latest,
-                "address": w3.to_checksum_address(USDT_POLYGON_CONTRACT),
+                "address": AsyncWeb3.to_checksum_address(USDT_POLYGON_CONTRACT),
                 "topics": [TRANSFER_TOPIC, None, padded_address]
             })
             
@@ -3335,28 +3366,24 @@ async def get_usdt_polygon_txid_tatum(address):
                 return tx_hash
             return None
         except Exception as e:
-            logger.debug(f"[Pol-TXID] RPC {rpc_url} failed: {e}")
+            # logger.debug(f"[Pol-TXID] RPC {rpc_url} failed: {e}")
             return None
+        finally:
+            if w3 is not None:
+                try: await w3.provider.session.close()
+                except: pass
 
-    
     # Run all RPCs in parallel, return first success
     tasks = [asyncio.create_task(try_rpc(url)) for url in POLYGON_RPC_URLS]
-    done, pending = await asyncio.wait(tasks, timeout=8, return_when=asyncio.FIRST_COMPLETED)
     
-    for t in done:
-        result = t.result()
-        if result:
-            for p in pending: p.cancel()
-            return result
-    
-    # Wait for remaining if none found
-    for p in pending:
+    for task in asyncio.as_completed(tasks):
         try:
-            result = await asyncio.wait_for(p, timeout=3)
+            result = await task
             if result:
+                for t in tasks: t.cancel()
                 return result
         except:
-            pass
+            continue
     
     return None
 
@@ -3445,8 +3472,9 @@ async def get_usdt_bep20_txid_parallel(address):
     padded_address = "0x" + address_bare.zfill(64)
     
     async def try_rpc(rpc_url):
+        w3 = None
         try:
-            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 5}))
+            w3 = AsyncWeb3(AsyncHTTPProvider(rpc_url, request_kwargs={"timeout": 6}))
             if not await w3.is_connected():
                 return None
             
@@ -3456,7 +3484,7 @@ async def get_usdt_bep20_txid_parallel(address):
             logs = await w3.eth.get_logs({
                 "fromBlock": start_block,
                 "toBlock": latest,
-                "address": w3.to_checksum_address(USDT_BEP20_CONTRACT),
+                "address": AsyncWeb3.to_checksum_address(USDT_BEP20_CONTRACT),
                 "topics": [TRANSFER_TOPIC, None, padded_address]
             })
             
@@ -3467,18 +3495,25 @@ async def get_usdt_bep20_txid_parallel(address):
                 return tx_hash
             return None
         except Exception as e:
-            logger.debug(f"[BEP20-TXID] RPC {rpc_url} failed: {e}")
+            # logger.debug(f"[BEP20-TXID] RPC {rpc_url} failed: {e}")
             return None
+        finally:
+            if w3 is not None:
+                try: await w3.provider.session.close()
+                except: pass
 
     # Run all RPCs in parallel, return first success
     tasks = [asyncio.create_task(try_rpc(url)) for url in BEP20_RPC_URLS]
-    done, pending = await asyncio.wait(tasks, timeout=8, return_when=asyncio.FIRST_COMPLETED)
     
-    for t in done:
-        result = t.result()
-        if result:
-            for p in pending: p.cancel()
-            return result
+    for task in asyncio.as_completed(tasks):
+        try:
+            result = await task
+            if result:
+                for t in tasks: t.cancel()
+                return result
+        except:
+            continue
+            
     return None
 
 
