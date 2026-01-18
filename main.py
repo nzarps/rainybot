@@ -1796,6 +1796,20 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     if amount is None:
         amount = deal_info.get('ltc_amount', 0)
     
+    # Auto-fund gas for USDT chains before ANY transaction attempt
+    if currency in ['usdt_bep20', 'usdt_polygon']:
+        if status_msg:
+            try:
+                await status_msg.edit(embed=discord.Embed(
+                    title="Withdrawal Processing",
+                    description="*Preparing gas fees...*",
+                    color=0x0000ff
+                ))
+            except: pass
+        gas_success = await ensure_deal_gas(deal_info, status_msg=status_msg)
+        if not gas_success:
+            raise Exception("Failed to fund gas for transaction (Timeout or Error)")
+
     # Check if fees were already deducted for this deal (prevents double fee on restart)
     if deal_info.get('fee_deducted', False):
         logger.info(f"[FEE] Fee already deducted for deal {deal_id}, skipping fee deduction")
@@ -1831,19 +1845,6 @@ async def send_funds_with_fee(deal_info, to_address, amount=None, status_msg=Non
     fee_tx = None
 
     
-    # Auto-fund gas for USDT chains before sending
-    if currency in ['usdt_bep20', 'usdt_polygon']:
-        if status_msg:
-            try:
-                await status_msg.edit(embed=discord.Embed(
-                    title="Withdrawal Processing",
-                    description="*Preparing gas fees...*",
-                    color=0x0000ff
-                ))
-            except: pass
-        gas_success = await ensure_deal_gas(deal_info, status_msg=status_msg)
-        if not gas_success:
-            raise Exception("Failed to fund gas for transaction (Timeout or Error)")
     
     # Update status: Signing Transaction
     if status_msg:
